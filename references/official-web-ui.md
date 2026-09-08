@@ -32,12 +32,43 @@ token 节点（类 `QA`，`setMode('token')`）。节点携带：
 | plugin | `@` | `[label](plugin://value)` | value 有 `x@y` 格式校验 |
 
 - 转义规则：label 的 `\` `[` `]`（Kx）；链接 target 的 `\` `>`（qx）。
-- **触发规则**：正则 `(^|\s)([/@$#¥])` —— 触发符必须紧跟行首或空白；
-  查询词本身不含空白。（¥ 也算官方触发符，用途未挖。）
-- 菜单类目：files / sessions / subagents / skills / whiteboards / plugins。
-- **files 数据源**：`fileService.readdir`（file channel），参数
-  `{path, includeHidden}`。响应 shape 未完全映射（Zemote 的
-  `parseFileEntries` 宽松接受 list / `{entries|children|files}`）。
+- **触发规则（2026-09-08 JS 解密，完整版）**：
+  正则 `mFe=/(^|\s)([/@$#¥￥])([^\s/@$#¥￥]*)$/`，解析函数 `UA`：
+  `trigger: gFe(t[2])`——**`¥`/`￥` 归一化为 `$`**（中文输入法等价触发，
+  用途已挖出，非独立类型）。触发符必须紧跟行首或空白。
+- **五触发符 → 三类口**：
+  - `/` → slash 命令（`enabled: d?.trigger==='/'`，`data-composer-trigger="/"`）
+  - `@` → 文件/上下文（files/plugins/whiteboards/simple-mention）
+  - `$`/`¥` → **技能**（skills）
+  - `#` → 会话（sessions）
+- 菜单类目（**六类**，2026-09-08 确认）：files / sessions / plugins / skills /
+  whiteboards / commands。每类独立 title/empty/searchHint i18n。
+- **files 数据源（2026-09-08 解密，修正 readdir 说）**：
+  `fileService.listWorkspaceFiles({rootPath})`（非 readdir）。条目 shape：
+  `{name, path, relativePath, type}`。候选映射 `bIe`：
+  `{id: relativePath, name, path, relativePath, type, keywords:[relativePath,path]}`。
+  预建索引 `AIe`：`{candidates, entryByRelativePath: Map}`。
+  过滤 `jIe`：`EIe(candidates, query, {limit, requireQuery:false})`。
+  **自动刷新 `NIe`**：查询为空即刷；有查询但 0 结果且查询未变 → 触发一次刷新
+  （`lastMissRefreshQuery` 防抖）。limit：`JPe(query, default3)`，有查询无 limit。
+  mention item `kIe`：`{id:'file:${relativePath}', category:'files', label:name,
+  description:relativePath, value:relativePath, markdown:Yx(...),
+  data:{kind:type, path, relativePath}}`。
+- **skill 数据源（2026-09-08 解密，待挖项已解）**：
+  `zcodeAgentService.getSkillReferenceCatalog({workspacePath, workspaceIdentity?,
+  remoteSessionId?, sessionId?})` → `{skills, authority}`。
+  排序 `fFe`：按 scope 优先级 workspace(0) < plugin(1) < user(2) 去重同名。
+  mention item：`{id:'skill:${id}', category:'skills', label:name, description:
+  '${scope本地化} · ${desc}', value:name, markdown:Xx(name,path),
+  data:{path, scope}}`。scope 本地化 `lFe`：workspace=工作区/plugin=插件/user=用户。
+  **value 字段 = e.name**（待挖项已解）。
+- **markdown 序列化（2026-09-08 精确版，含转义）**：
+  - 文件 `Yx(path,name,type='file')`：`[label](path)`，目录 `hke` 尾补 `/`
+  - 技能 `Xx(name,path?)`：有 path `[$name](path)`，无 path 裸 `$name`
+  - 简单提及 `Zx(name)`：裸 `@name`
+  - 会话 `gke(id,title?)`：`[#title](#id)`，无别名裸 `#id`
+  - 插件 `Qx(name,id)`：`[label](plugin://id)`，value 有 `x@y` 邮箱格式校验
+  - 转义 `Kx`：`\` `[` `]`；`qx`：`\` `>`
 - 渲染侧指令：`:zcode-file-citation:`（单/三冒号 directive，流式期间
   `minimumSingleColonPrefixLength: 6`）——AI 回复里文件引用卡片的实现。
 
@@ -496,12 +527,47 @@ tooltip「选择模型」；思考 chip 竖条改全高动画，tooltip 按官�
 - [ ] assistant 正文容器 / turnHeader / timeline marker 的精确 class
       （reasoning 渐隐遮罩组件 `dX`、`uX` 变量附近可挖到更多）。
 - [ ] readdir 响应完整 shape（真机打 `[conversation] readdir` 日志即得）。
-- [ ] files 菜单的本地索引/过滤实现（`PIe` → `jIe`/`AIe`，官方可能预建索引）。
-- [ ] `¥` 触发符的用途。
-- [ ] skill mention 的 value 字段内容（`Xx(e,t)` 的 t 来源）。
+      ⚠️ 2026-09-08 修正：files 数据源是 `listWorkspaceFiles`（见 mention 节），
+      readdir 仍是独立 RPC，shape 待真机。
+- [x] ~~files 菜单的本地索引/过滤实现~~（2026-09-08 已解：AIe 预建索引 + jIe 过滤 + NIe 自动刷新，见 mention 节）
+- [x] ~~`¥` 触发符的用途~~（2026-09-08 已解：¥/￥ 归一化为 $，中文输入法等价，见 mention 节）
+- [x] ~~skill mention 的 value 字段内容~~（2026-09-08 已解：value = skill name，见 mention 节）
 - [x] ~~用量环 / 上下文明细 / 缓存命中率~~（2026-09-07 已解密，见「用量环形圈」节）。
 - [x] ~~辅助对话语义~~（2026-09-07 已解密，见「辅助对话」节）。
 - [x] ~~状态面板/summaryPanel（工作台对应物）~~（2026-09-07 已解密，见「状态面板」节）。
+
+### 2026-09-08 完整资产抓取 + JS 逻辑解密（ZcodeRemote 批次）
+
+> 官方 /remote/v4 完整资产已存档：`assets/official/`（HTML + 主 bundle 4.8MB +
+> CSS 384KB）。CSS 体系规格单独成文：`references/official-styles.md`。
+> 本轮新解密见下方。
+
+- **mention 触发正则完整版**：`(^|\s)([/@$#¥￥])([^\s/@$#¥￥]*)$`，¥/￥→$
+  （见 mention 节）。
+- **composer DOM 结构标记**（`data-*`，JSX 真身）：
+  - `data-composer-leading-actions` / `data-composer-leading-content`：左侧操作区
+  - `data-composer-background-layout="typed"|"compact"`：**背景布局双形态**——
+    typed 显示 bashCount/subagentCount 明细，compact 只显示 totalCount，
+    `@max-[480px]/composer` 切换（icon-only 时用 compact）
+  - `data-composer-file-attachments-row` / `data-composer-context-attachments-row`：
+    文件附件行 / 上下文附件行（comments/contexts/references）
+  - `data-composer-attachment-kind`：video/image/pdf/file
+  - `data-upload-status`：上传状态机（ready/uploading/failed...）
+  - `data-composer-trigger`：mention 触发按钮（@ 图标 pp / $ 图标 km / 其他 av）
+  - `data-chat-toolbar-popover-trigger`：工具栏 popover 触发器（模型/思考/用量/更多）
+  - `data-model-current-value`：模型 chip 当前值
+  - `data-testid`：各按钮测试锚点
+- **工具栏快捷键**（HI 函数）：model=`m`、mode=`ctrlShiftM`、thought=档位键。
+- **响应式 label 折叠**：`yVe({labelVisible, availableWidth, contentWidth})`——
+  测量 leading-actions 容器宽 vs 内容宽，自动折叠文字 label（`labelVisibilityClassName`
+  传播到子 chip）。
+- **goal 状态机**（HIe）：running/prewarming → `running`；completedSuccess/
+  completedInterrupted → `completed`；error → `error`。会话加载态（KSe）：
+  error/unread/loading/none（unread 显示未读标记）。
+- **i18n 键清单**：主 bundle 里 `chat.*` 命名空间 **595 个键**已全量提取
+  （脚本 `build/extract_i18n.py` 可重跑）。功能模块文案键见
+  `references/official-i18n.md`（键名索引）——实现 UI 文案时逐个对照。
+- **Xx/Yx/Zx/Qx/gke 精确转义**：见 mention 节（Kx 转义 `\[]`，qx 转义 `\>`）。
 
 ### 2026-09-07 晚第四轮补充解密（He 反馈批）
 
