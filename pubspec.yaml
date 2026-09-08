@@ -1,0 +1,29 @@
+name: zcode_remote
+description: "ZcodeRemote - ZCode desktop remote control client (clean-room protocol reimplementation)"
+publish_to: 'none'
+
+# Keep in sync with lib/update/app_version.dart (appVersion/appBuildNumber).
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Protocol layer (lib/protocol/) — pure Dart, zero Flutter UI deps.
+  web_socket_channel: ^3.0.1
+  crypto: ^3.0.5
+
+  # Update mechanism (lib/update/).
+  http: ^1.6.0
+  shared_preferences: ^2.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
