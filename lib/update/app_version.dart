@@ -7,4 +7,4 @@ const appVersion = '0.1.0';
 const appBuildNumber = 1;
 
 /// GitHub repo used for update checks, in `owner/repo` form.
-const updateRepo = 'YOUR_GITHUB_USER/zcode_remote';
+const updateRepo = 'ALI2580/zcode_remote';
