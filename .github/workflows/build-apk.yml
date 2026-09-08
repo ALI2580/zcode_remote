@@ -1,0 +1,104 @@
+name: Build APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build release APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: 3.47.2
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Run unit tests
+        run: flutter test
+
+      # Restore the release keystore from GitHub Secrets so CI-built APKs
+      # share the same signature as local builds (overwrite-install works).
+      - name: Set up release signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > android/app/zcode_remote-release.jks
+            echo "ANDROID_STOREFILE=zcode_remote-release.jks" >> "$GITHUB_ENV"
+            echo "ANDROID_STOREPASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYPASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "Release signing configured from secrets."
+          else
+            echo "WARN: ANDROID_KEYSTORE_BASE64 secret missing; APK will use debug signing."
+          fi
+
+      - name: Build ABI APKs (release)
+        run: |
+          flutter build apk --release --target-platform android-arm64
+          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/zcode_remote-arm64-v8a.apk
+          flutter build apk --release --target-platform android-arm
+          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/zcode_remote-armeabi-v7a.apk
+          flutter build apk --release --target-platform android-x64
+          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/zcode_remote-x86_64.apk
+
+      - name: Generate ABI checksums
+        run: |
+          cd build/app/outputs/flutter-apk
+          md5sum zcode_remote-arm64-v8a.apk > zcode_remote-arm64-v8a.apk.md5
+          md5sum zcode_remote-armeabi-v7a.apk > zcode_remote-armeabi-v7a.apk.md5
+          md5sum zcode_remote-x86_64.apk > zcode_remote-x86_64.apk.md5
+
+      - name: Prepare release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: .github/scripts/release-notes.ps1
+
+      - name: Remove obsolete release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq .id 2>/dev/null || true)
+          if [ -n "$release_id" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
+              --jq '.[] | select(.name == "app-release.apk" or .name == "app-release.apk.sha256") | .id' |
+            while read -r asset_id; do
+              [ -n "$asset_id" ] && gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+            done
+          fi
+
+      - name: Upload APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: |
+            build/app/outputs/flutter-apk/zcode_remote-arm64-v8a.apk
+            build/app/outputs/flutter-apk/zcode_remote-arm64-v8a.apk.md5
+            build/app/outputs/flutter-apk/zcode_remote-armeabi-v7a.apk
+            build/app/outputs/flutter-apk/zcode_remote-armeabi-v7a.apk.md5
+            build/app/outputs/flutter-apk/zcode_remote-x86_64.apk
+            build/app/outputs/flutter-apk/zcode_remote-x86_64.apk.md5
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
