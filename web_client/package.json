@@ -1,0 +1,12 @@
+{
+  "name": "zcode-remote-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "sync:official": "node scripts/sync-official.mjs",
+    "dev": "node scripts/dev-server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": { "node": ">=22" }
+}

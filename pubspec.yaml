@@ -3,7 +3,7 @@ description: "ZcodeRemote - ZCode desktop remote control client (clean-room prot
 publish_to: 'none'
 
 # Keep in sync with lib/update/app_version.dart (appVersion/appBuildNumber).
-version: 0.1.0+1
+version: 0.1.0+10
 
 environment:
   sdk: ^3.5.0
@@ -11,6 +11,11 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_markdown_plus: 1.0.12
+  super_sliver_list: 0.4.1
+  intl: 0.20.3
 
   # Protocol layer (lib/protocol/) — pure Dart, zero Flutter UI deps.
   web_socket_channel: ^3.0.1
@@ -22,6 +27,8 @@ dependencies:
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  integration_test:
     sdk: flutter
   flutter_lints: ^5.0.0
 

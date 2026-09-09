@@ -1,5 +1,7 @@
 # 官方 Web 客户端 UI/协议逆向笔记
 
+本文件是历史取证副本。V2 开发优先读取 [仓库当前 UI 记录](../../../../references/official-web-ui.md)、[Composer 协议](../../../../references/composer-v2-protocol.md) 与 [固定资产基线](../../../../references/official-web-baseline.json)。下文临时目录可能已不存在，旧组件/完成状态不可代替当前代码；需要追溯旧样式时再按主题读取。
+
 > 2026-09-06 从 `https://zcode.z.ai/remote/v4` 在线抓取分析（app_version 3.7.7 时代的构建）。
 > 抓取方式：`index.html` → 全部 82 个 `/remote/v4/assets/*.{js,css}`（共 8.2MB）。
 > 本地临时副本在 `/tmp/zemote-official/`（会丢失），本笔记是仓库内的持久沉淀。

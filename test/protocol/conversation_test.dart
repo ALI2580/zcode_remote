@@ -46,7 +46,10 @@ void main() {
         'payload': {
           'kind': 'deltas',
           'deltas': [
-            {'op': 'row.appended', 'row': {'rowId': 99, 'kind': 'user', 'text': 'new'}},
+            {
+              'op': 'row.appended',
+              'row': {'rowId': 99, 'kind': 'user', 'text': 'new'}
+            },
           ],
         },
         'fromSeq': 1,
@@ -68,7 +71,10 @@ void main() {
         'payload': {
           'kind': 'deltas',
           'deltas': [
-            {'op': 'row.upserted', 'row': {'rowId': 1, 'kind': 'user', 'text': 'updated'}},
+            {
+              'op': 'row.upserted',
+              'row': {'rowId': 1, 'kind': 'user', 'text': 'updated'}
+            },
           ],
         },
         'fromSeq': 5,
@@ -80,11 +86,13 @@ void main() {
     });
 
     test('row.removed removes from rowId upward', () {
-      _injectSnapshot(state, rows: [
-        {'rowId': 1, 'kind': 'user', 'text': 'a'},
-        {'rowId': 2, 'kind': 'assistant', 'text': 'b'},
-        {'rowId': 3, 'kind': 'user', 'text': 'c'},
-      ], totalCount: 3);
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 1, 'kind': 'user', 'text': 'a'},
+            {'rowId': 2, 'kind': 'assistant', 'text': 'b'},
+            {'rowId': 3, 'kind': 'user', 'text': 'c'},
+          ],
+          totalCount: 3);
 
       state.applyFrame({
         'payload': {
@@ -132,7 +140,12 @@ void main() {
         'payload': {
           'kind': 'deltas',
           'deltas': [
-            {'op': 'row.delta', 'rowId': 1, 'path': 'inputText', 'append': ' -la'},
+            {
+              'op': 'row.delta',
+              'rowId': 1,
+              'path': 'inputText',
+              'append': ' -la'
+            },
           ],
         },
         'fromSeq': 5,
@@ -155,7 +168,12 @@ void main() {
         'payload': {
           'kind': 'deltas',
           'deltas': [
-            {'op': 'row.delta', 'rowId': 1, 'path': 'output.text', 'append': '\nfile2'},
+            {
+              'op': 'row.delta',
+              'rowId': 1,
+              'path': 'output.text',
+              'append': '\nfile2'
+            },
           ],
         },
         'fromSeq': 5,
@@ -175,7 +193,10 @@ void main() {
         'payload': {
           'kind': 'deltas',
           'deltas': [
-            {'op': 'state.updated', 'patch': {'revision': 6}},
+            {
+              'op': 'state.updated',
+              'patch': {'revision': 6}
+            },
           ],
         },
         'fromSeq': 5,
@@ -191,7 +212,10 @@ void main() {
         'payload': {
           'kind': 'deltas',
           'deltas': [
-            {'op': 'state.updated', 'patch': {'revision': 3}},
+            {
+              'op': 'state.updated',
+              'patch': {'revision': 3}
+            },
           ],
         },
         'fromSeq': 0,
@@ -251,25 +275,114 @@ void main() {
       expect(items[0]['queueItemId'], 'q2');
     });
 
-    test('canLoadOlder is true when more rows exist', () {
-      _injectSnapshot(state, rows: [
-        {'rowId': 10, 'kind': 'user', 'text': 'latest'},
-      ], totalCount: 100, firstRowId: 10);
+    test('canLoadOlder follows the official oldest cursor and first row bound',
+        () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 10, 'kind': 'user', 'text': 'latest'},
+          ],
+          totalCount: 1,
+          firstRowId: 1);
 
+      expect(state.canLoadOlder, isTrue);
+      state.firstRowId = 10;
+      state.totalCount = 100;
+      expect(state.canLoadOlder, isFalse);
+    });
+
+    test('a new log epoch discards old history and exhaustion', () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 1, 'text': 'old log'}
+          ],
+          firstRowId: 1,
+          snapshot: {'logEpoch': 'old'});
+      state.historyExhausted = true;
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 10, 'text': 'new log'}
+          ],
+          firstRowId: 2,
+          snapshot: {'logEpoch': 'new'});
+      expect(state.rows.map((r) => r['rowId']), [10]);
+      expect(state.historyExhausted, isFalse);
       expect(state.canLoadOlder, isTrue);
     });
 
+    test('history merge discards wrong epochs and moved cursors', () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 100, 'text': 'live'}
+          ],
+          firstRowId: 1,
+          seq: 30,
+          snapshot: {'logEpoch': 'new'});
+      final page = {
+        'rows': [
+          {'rowId': 40, 'text': 'older'},
+          {'rowId': 100, 'text': 'stale'}
+        ],
+        'atSeq': 20,
+        'atLogEpoch': 'old',
+        'hasMore': true
+      };
+      expect(
+          state.applyHistoryPage(page,
+              beforeRowId: 100, expectedLogEpoch: 'new'),
+          HistoryPageResult.stale);
+      page['atLogEpoch'] = 'new';
+      expect(
+          state.applyHistoryPage(page,
+              beforeRowId: 99, expectedLogEpoch: 'new'),
+          HistoryPageResult.stale);
+      expect(
+          state.applyHistoryPage(page,
+              beforeRowId: 100, expectedLogEpoch: 'new'),
+          HistoryPageResult.applied);
+      expect(state.rows.map((r) => r['rowId']), [40, 100]);
+      expect(state.rows.last['text'], 'live');
+      expect(state.firstRowId, 1);
+      expect(state.canLoadOlder, isTrue);
+      expect(state.seq, 30);
+    });
+
+    test('a nonadvancing history response does not mark history complete', () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 100}
+          ],
+          firstRowId: 1,
+          snapshot: {'logEpoch': 'new'});
+      expect(
+          state.applyHistoryPage({
+            'rows': [
+              {'rowId': 100}
+            ],
+            'atLogEpoch': 'new',
+            'hasMore': false
+          }, beforeRowId: 100, expectedLogEpoch: 'new'),
+          HistoryPageResult.noProgress);
+      expect(state.canLoadOlder, isTrue);
+      expect(state.historyExhausted, isFalse);
+    });
+
     test('oldestRowId uses the oldest held row as pagination cursor', () {
-      _injectSnapshot(state, rows: [
-        {'rowId': 10, 'kind': 'user', 'text': 'latest'},
-      ], totalCount: 20, firstRowId: 1);
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 10, 'kind': 'user', 'text': 'latest'},
+          ],
+          totalCount: 20,
+          firstRowId: 1);
       expect(state.oldestRowId, 10);
     });
 
     test('resync snapshot preserves paged-in older rows', () {
-      _injectSnapshot(state, rows: [
-        {'rowId': 10, 'kind': 'user', 'text': 'tail'},
-      ], totalCount: 10, firstRowId: 1);
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 10, 'kind': 'user', 'text': 'tail'},
+          ],
+          totalCount: 10,
+          firstRowId: 1);
       state.prependOlderRows([
         {'rowId': 1, 'kind': 'user', 'text': 'older'},
       ], 1);
@@ -295,17 +408,23 @@ void main() {
     });
 
     test('canLoadOlder is false when all rows loaded', () {
-      _injectSnapshot(state, rows: [
-        {'rowId': 1, 'kind': 'user', 'text': 'first'},
-      ], totalCount: 1, firstRowId: 1);
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 1, 'kind': 'user', 'text': 'first'},
+          ],
+          totalCount: 1,
+          firstRowId: 1);
 
       expect(state.canLoadOlder, isFalse);
     });
 
     test('prependOlderRows inserts before existing', () {
-      _injectSnapshot(state, rows: [
-        {'rowId': 3, 'kind': 'assistant', 'text': 'c'},
-      ], totalCount: 3, firstRowId: 3);
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 3, 'kind': 'assistant', 'text': 'c'},
+          ],
+          totalCount: 3,
+          firstRowId: 3);
 
       state.prependOlderRows([
         {'rowId': 1, 'kind': 'user', 'text': 'a'},
@@ -339,7 +458,9 @@ void main() {
         'revision': 5,
         'control': {'phase': 'running', 'canStop': true},
         'config': {'model': 'GLM-5.2', 'thought': 'max', 'mode': 'build'},
-        'usage': {'contextWindow': {'usedTokens': 100, 'maxTokens': 200000}},
+        'usage': {
+          'contextWindow': {'usedTokens': 100, 'maxTokens': 200000}
+        },
       });
 
       expect(state.isRunning, isTrue);
@@ -413,8 +534,20 @@ void main() {
           'kind': 'snapshot',
           'snapshot': {
             'sessions': [
-              {'sessionId': 'older', 'lastActivityAt': 100, 'createdAt': 50, 'phase': 'draft', 'title': 'Old'},
-              {'sessionId': 'newer', 'lastActivityAt': 200, 'createdAt': 50, 'phase': 'draft', 'title': 'New'},
+              {
+                'sessionId': 'older',
+                'lastActivityAt': 100,
+                'createdAt': 50,
+                'phase': 'draft',
+                'title': 'Old'
+              },
+              {
+                'sessionId': 'newer',
+                'lastActivityAt': 200,
+                'createdAt': 50,
+                'phase': 'draft',
+                'title': 'New'
+              },
             ],
           },
         },
@@ -454,8 +587,20 @@ void main() {
 
     test('session.removed delta', () {
       _injectSessionsSnapshot(state, sessions: [
-        {'sessionId': 's1', 'title': 'T1', 'phase': 'draft', 'lastActivityAt': 0, 'createdAt': 0},
-        {'sessionId': 's2', 'title': 'T2', 'phase': 'draft', 'lastActivityAt': 0, 'createdAt': 0},
+        {
+          'sessionId': 's1',
+          'title': 'T1',
+          'phase': 'draft',
+          'lastActivityAt': 0,
+          'createdAt': 0
+        },
+        {
+          'sessionId': 's2',
+          'title': 'T2',
+          'phase': 'draft',
+          'lastActivityAt': 0,
+          'createdAt': 0
+        },
       ]);
 
       state.applyFrame({
@@ -517,21 +662,27 @@ void main() {
     });
 
     test('map with entries/children/files unwraps', () {
-      expect(parseFileEntries({
-        'entries': [
-          {'name': 'a'},
-        ],
-      }), hasLength(1));
-      expect(parseFileEntries({
-        'children': [
-          {'name': 'b'},
-        ],
-      }), hasLength(1));
-      expect(parseFileEntries({
-        'files': [
-          {'name': 'c'},
-        ],
-      }), hasLength(1));
+      expect(
+          parseFileEntries({
+            'entries': [
+              {'name': 'a'},
+            ],
+          }),
+          hasLength(1));
+      expect(
+          parseFileEntries({
+            'children': [
+              {'name': 'b'},
+            ],
+          }),
+          hasLength(1));
+      expect(
+          parseFileEntries({
+            'files': [
+              {'name': 'c'},
+            ],
+          }),
+          hasLength(1));
     });
 
     test('unrecognized shapes degrade to empty list', () {

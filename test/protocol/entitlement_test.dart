@@ -140,6 +140,15 @@ void main() {
   });
 
   group('formatStartPlanPercent (pZe)', () {
+    test('missing and non-finite balances stay unknown, zero is real data', () {
+      expect(formatStartPlanPercent(null, 100), '--');
+      expect(formatStartPlanPercent(double.nan, 100), '--');
+      expect(formatStartPlanPercent(20, double.infinity), '--');
+      expect(formatStartPlanPercent(0, 100), '0%');
+      expect(startPlanRemainingPercent(null, 100), isNull);
+      expect(formatQuotaPercent(double.nan), '--');
+      expect(formatQuotaPercent(double.infinity), '--');
+    });
     test('remaining/number as whole percent, clamped', () {
       expect(formatStartPlanPercent(40, 100), '40%');
       expect(formatStartPlanPercent(150, 100), '100%');
@@ -180,6 +189,10 @@ void main() {
       expect(formatResetClock(ms), '14:05');
       expect(formatResetDate(ms), '9月8日');
       expect(formatResetClock(null), '');
+      expect(formatResetClock(0), '');
+      expect(formatResetDate(9000000000000000), '');
+      expect(QuotaLimit.fromRaw({'nextResetTime': 0}).nextResetTime, isNull);
+      expect(QuotaLimit.fromRaw({'nextResetTime': 9e18}).nextResetTime, isNull);
     });
     test('adaptive shows HH:mm only for same-day resets', () {
       final now = DateTime.now();

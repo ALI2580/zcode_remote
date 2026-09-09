@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>ZcodeRemote</title><link rel="stylesheet" href="/host/app.css"></head>
+<body>
+  <main id="devices-page">
+    <header><strong>ZcodeRemote</strong><span>Web 运行验证版</span></header>
+    <section class="device-content"><div class="page-title"><div><h1>你的设备</h1><p>连接桌面，继续工作。</p></div><button id="add-device">添加设备</button></div>
+      <div id="device-list"></div><p id="empty-state">在桌面 ZCode 开启远程控制，然后添加连接链接。</p>
+      <p class="notice">本阶段连接仅保留在当前页面，刷新后需要重新添加。</p>
+    </section>
+  </main>
+  <div id="runtimes" hidden></div>
+  <button id="connecting-devices" hidden>设备</button>
+  <dialog id="add-dialog"><form id="add-form"><h2>添加设备</h2><label>设备名称<input name="label" autocomplete="off" placeholder="可选，例如：办公室电脑"></label><label>远程控制链接<input name="remoteUrl" type="password" required autocomplete="off" spellcheck="false" placeholder="粘贴 ZCode 远程控制链接"></label><p id="add-error" role="alert"></p><div class="actions"><button type="button" data-close="add-dialog">取消</button><button type="submit">连接</button></div></form></dialog>
+  <dialog id="switch-dialog"><h2>切换设备</h2><div id="switch-list"></div><div class="actions"><button id="switch-add">添加设备</button><button data-close="switch-dialog">关闭</button></div></dialog>
+  <p id="status" role="status" aria-live="polite"></p>
+  <script type="module" src="/host/app.mjs"></script>
+</body>
+</html>

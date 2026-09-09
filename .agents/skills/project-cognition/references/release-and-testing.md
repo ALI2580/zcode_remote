@@ -1,117 +1,222 @@
-# 测试与发布流程
+# PowerShell 测试、原生 QA 与阶段交付
 
-## 本地验证（贡献门槛，CI 同款）
+适用于当前 ZcodeRemote V2。命令是操作示例，按当前任务选择执行，不意味着自动获得安装、远端写入或正式发布授权。2026-09-09 已验证工具链为 Flutter 3.47.2 / Dart 3.13.2、Android build-tools 36.0.0；换机器先核对路径与版本。
 
-```bash
-flutter analyze            # 必须零告警
-flutter test               # 单元测试必须全过
-flutter build web --release  # Web 编译冒烟（CI 会跑）
+## 1. 初始化与选择最短验证路径
+
+```powershell
+$RepoDir = 'D:\WorkSpace\ZcodeRemote'
+$Flutter = 'D:\SoftWare\Develop\flutter\bin\flutter.bat'
+$Dart = 'D:\SoftWare\Develop\flutter\bin\dart.bat'
+$Adb = 'D:\Software\Develop\platform-tools\adb.exe'
+$BuildTools = 'D:\Software\Develop\Jetbrains\AndroidSDK\build-tools\36.0.0'
+$Phone = '127.0.0.1:16448'
+$Tablet = '127.0.0.1:16480'
+Set-Location -LiteralPath $RepoDir
+git status --short
+git diff --stat
 ```
 
-本地运行：
+地址是本轮基线，不是永久端口。先用 MuMu 的 extra_config.json / playerName 匹配“竖屏手机”和“平板横屏”，再核对 vm_config.json 的 ADB 映射。配置根目录当前为 `D:\SoftWare\Common\Mumu\emulator\MuMuPlayer-12.0\vms`。
 
-```bash
-flutter run                # Android
-flutter run -d chrome      # Web（调试/快速预览）
-flutter run -d windows     # Windows 桌面
+| 修改内容 | 最短相关集合（仓库相对路径） |
+| --- | --- |
+| 协议/重连 | test/protocol + tooling/protocol_smoke.dart |
+| 侧栏状态 | test/state/workspace_catalog_test.dart、app_sessions_test.dart、test/ui/task_navigation_test.dart |
+| 配置/发送/队列 | test/state/composer_controller_test.dart、test/protocol/composer_transport_test.dart、test/ui/composer_ui_test.dart |
+| 引用/IME | test/state/composer_references_test.dart、test/ui/composer_features_test.dart |
+| 附件/恢复 | test/state/composer_attachments_test.dart、test/protocol/attachment_transport_test.dart、test/state/recovery_test.dart |
+| 额度/重置 | test/state/composer_usage_test.dart、plan_resets_test.dart、test/ui/plan_reset_dialog_test.dart |
+| 统计 | test/state/usage_statistics_test.dart、test/ui/usage_page_test.dart |
+| 阅读/辅助功能 | test/ui/conversation_history_test.dart、conversation_viewport_test.dart、markdown_accessibility_test.dart |
+| 返回/通知 | test/ui/predictive_back_test.dart、notification_navigation_test.dart、test/notifications |
+
+```powershell
+# pubspec/lock 未变化且依赖已就绪时可用 --no-pub；否则先 flutter pub get。
+& $Flutter test --no-pub test/state/workspace_catalog_test.dart test/state/app_sessions_test.dart test/ui/task_navigation_test.dart --reporter expanded
+if ($LASTEXITCODE -ne 0) { throw 'focused tests failed' }
+& $Dart run tooling/protocol_smoke.dart
+if ($LASTEXITCODE -ne 0) { throw 'protocol smoke failed' }
 ```
 
-## 测试分层与写法
+先复现、修复、跑相关回归；阶段收尾再完整检查。已通过后，只因新改动或未解决疑点扩测，不无条件重复全量构建。
 
-### 单元测试（test/，不需要真实桌面）
+## 2. 完整检查与字体化渲染
 
-协议层是纯 Dart，全部用 **fake 注入回环**风格测：
+每个阶段使用新的日志/截图目录，避免覆盖旧证据。同一工作区的 Flutter/Gradle 构建和原生测试串行运行。
 
-```dart
-late List<Map<String, dynamic>> sent;
-late RpcFrameTransport transport;
-
-setUp(() {
-  sent = [];
-  transport = RpcFrameTransport(
-    bridgeSessionId: 'bridge-1',
-    sendPayload: (p) => sent.add(p),   // fake 发送，回环自收
-  );
-  transport.messages.listen((msg) => received.add(msg));
-});
+```powershell
+$Stage = 'next-stage'
+$Evidence = Join-Path $RepoDir 'build\artifacts'
+New-Item -ItemType Directory -Force -Path $Evidence | Out-Null
+& $Flutter analyze *> "$Evidence\$Stage-analyze.log"
+if ($LASTEXITCODE -ne 0) { throw 'analyze failed' }
+& $Flutter test --reporter expanded *> "$Evidence\$Stage-tests.log"
+if ($LASTEXITCODE -ne 0) { throw 'tests failed' }
+& $Dart run tooling/protocol_smoke.dart *> "$Evidence\$Stage-protocol-smoke.log"
+if ($LASTEXITCODE -ne 0) { throw 'protocol smoke failed' }
 ```
 
-既有覆盖面（新增同类逻辑时对齐）：
+```powershell
+$env:ZCODE_TEST_FONT = 'C:/Windows/Fonts/msyh.ttc'
+$env:ZCODE_TEST_MONO_FONT = 'C:/Windows/Fonts/consola.ttf'
+$env:ZCODE_TEST_ICON_FONT = 'D:/SoftWare/Develop/flutter/bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf'
+$env:ZCODE_UI_CAPTURE_DIR = "build/v2-$Stage-preview"
+& $Flutter test test/ui/v2_visual_test.dart test/ui/usage_page_test.dart --reporter expanded
+if ($LASTEXITCODE -ne 0) { throw 'render tests failed' }
+```
 
-- 协议编解码：`ipc_codec_test`、`rpc_transport_test`、`connection_params_test`
-- 状态机/合并：`task_home_merge_test`（双源合并）、`chat_grouping_test`（气泡分组）、
-  `session_list_cache_test`
-- 状态持久化：`account_store_test`、`id_account_test`
-- 平台特性：`update_checker_test`（含版本排序/预发布）、`notify_state_test`、
-  `voice_models_test`
-- UI：`chat_theme_test`、`diff_view_test`、`settings_page_test` 等 widget 测试
+覆盖五形态（常用宽度 344/390/720/834/1180）、深浅、中英、100/140%，再按功能补键盘/主辅/错误/空态。打开代表图实际检查；这些入口不是所有页面所有状态的完整矩阵。实际官方比较还需同远端、任务、滚动、主题、字号、等效可用宽度。
 
-### 集成测试（integration_test/，需要真实桌面 + 凭据）
+## 3. 设备预检与独立 QA
 
-- 通过环境变量 `ZEMOTE_PROBE_URL` 注入远程控制 URL，**永不写死凭据**。
-- 只做**只读探针**：验证 `listTasks` 条数、sessions-index 条数、最终可见会话数一致。
-- 协议层改动后，若有真实环境建议跑一次只读验证（先例：0.4.3 用
-  `listTasks=1` / sessions-index `=2` / 可见会话 `=2` 验证合并逻辑）。
+```powershell
+foreach ($Target in @($Phone, $Tablet)) {
+    Write-Output $Target
+    & $Adb -s $Target shell wm size
+    & $Adb -s $Target shell wm density
+    & $Adb -s $Target shell dumpsys display | Select-String 'mCurrentOrientation'
+    & $Adb -s $Target shell dumpsys package com.zcoderemote.zcode_remote.dev |
+        Select-String 'versionCode=|versionName='
+}
+```
 
-### 回归测试纪律
+不要用 user_rotation 设置值代替实际方向。区分截图物理像素、Flutter logical 像素与浏览器 CSS 像素。确认操作者、连接身份及独占状态后再操作。
 
-修任何 bug（尤其协议/连接/合并类）必须同时新增锚定该 bug 的回归测试。
-历史先例：Initialize 单元素帧 `[200]`、双数据源空响应、Beta 版本排序。
+```powershell
+$env:ZCODE_ANDROID_QA = 'true'
+try {
+    & $Flutter test integration_test/task_management_test.dart -d $Phone --no-uninstall --reporter expanded *> "$Evidence\$Stage-native-phone.log"
+    if ($LASTEXITCODE -ne 0) { throw 'phone QA failed' }
+    & $Flutter test integration_test/task_management_test.dart -d $Tablet --no-uninstall --reporter expanded *> "$Evidence\$Stage-native-tablet.log"
+    if ($LASTEXITCODE -ne 0) { throw 'tablet QA failed' }
+} finally {
+    Remove-Item Env:ZCODE_ANDROID_QA -ErrorAction SilentlyContinue
+}
+```
 
-## 发布流程（稳定版与 Beta 版）
+其他按需入口：
 
-1. 代码合入 `main`（稳定）或 `beta`（预发布）分支，保证 analyze/test 全绿。
-2. **版本号三处同步**：`pubspec.yaml`（`version: X.Y.Z+build`，build 号递增）、
-   `lib/update/app_version.dart`（更新检查用的常量）、`test/update_checker_test.dart`
-   的守护测试（断言版本与 build 号的具体值）。漏一处 CI 必红。
-3. 按 Keep a Changelog（中文）更新 `CHANGELOG.md`：Added / Changed / Fixed 分类。
-4. 打 tag 并推送：`git tag vX.Y.Z && git push origin vX.Y.Z`。
-   Beta 预发布 tag 形如 `vX.Y.Z-beta.N` / `vX.Y.Z-rc.N`（更新检测按 SemVer 预发布规则
-   排序，且受"接收 Beta 更新"开关过滤 GitHub Pre-release）。
-5. `build-apk.yml` 自动执行：analyze + test → 从 Secrets 恢复 keystore 签名 →
-   构建 3 个 ABI APK（arm64-v8a / armeabi-v7a / x86_64）→ 生成各自 MD5 →
-   上传 GitHub Release。实测全程约 13 分钟。
-6. **顺序纪律（0.5.4 验证零返工）**：先推 `main` 等 ci.yml 全绿，再打 tag——0.5.3 因
-   tag 抢在测试修复前推送，导致一次失败的 Release 构建。严格按本清单执行可一次通过。
+- `usage_controls_test.dart`：合成额度机会、消费确认、自动完成/已读及控件。
+- `usage_statistics_test.dart`：更多、范围、图表明细、主题/字号和返回。
+- `android_system_test.dart`：读取其 guard 后验证系统能力。
+- `attachment_recovery_test.dart`：`RECOVERY_QA_PHASE=seed/verify`，还需规定的 fixture/系统选择器步骤。
+- `reading_recovery_test.dart`：`READING_QA_PHASE=seed/verify`，分阶段保留 QA 数据验证进程重建。
 
-## CI 配置（.github/workflows/）
+每个入口先核对包名 guard 和副作用。不能把 seed/verify 合并成清数据后的普通循环，也不能在 `.dev` 上运行这些测试。测试后仅停止指定 QA 包：
 
-- `ci.yml`：push 到 main/beta 与所有 PR → `flutter pub get` → `flutter analyze` →
-  `flutter test` → `flutter build web --release` 冒烟。
-- `build-apk.yml`：`v*` tag 或手动触发 → 签名构建 3 ABI + MD5 → 上传 Release。
-  Action 版本用 commit SHA 固定（供应链安全习惯）。
-- **门禁盲区（0.5.5 踩过）**：ci.yml **不编译 Android**——"先推 main 等 CI 绿再打 tag"
-  的策略只覆盖 Dart 层。Kotlin/gradle 改动（新原生 API、依赖升级、compileSdk 调整）的
-  真正编译验证只在 build-apk.yml；首次接入原生 API 预期 1-2 次构建失败，修复流程见
-  lessons.md 的 Live Updates 节（framework 符号陷阱、androidx.core 版本甜点位、
-  AAR metadata 的 minCompileSdk 检查）。
+```powershell
+& $Adb -s $Phone shell am force-stop com.zcoderemote.zcode_remote.qa
+& $Adb -s $Tablet shell am force-stop com.zcoderemote.zcode_remote.qa
+```
 
-## 签名要点（当前仓库 ALI2580/zemote，已配置完成）
+## 4. 产品构建、包名/签名/ABI 核对
 
-- 四个 GitHub Secrets 已配置：`ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` /
-  `ANDROID_KEY_PASSWORD` / `ANDROID_KEY_ALIAS=zemote`；gradle 侧本地走
-  `android/key.properties`（git-ignored），CI 走 `ANDROID_*` 环境变量，键名一一对应。
-- **keystore 备份在 `C:\Users\99553\zemote-signing\`**：`zemote-release.jks`（本体）、
-  `.pass`（store/key 密码，两者相同）、`keystore.base64.txt`（Secrets 用）。此密钥决定
-  所有后续版本的覆盖安装链路，丢失后无法弥补——云盘 + 本地各存一份。
-- 证书：`CN=ALI2580, OU=Zemote`，自签名，有效期 10000 天；SHA-1
-  `37:78:91:25:BF:E2:5B:7B:CE:44:62:B6:89:D9:52:D4:28:33:B5:3E`。
-- 与原作者官方版签名不同：装过 HumanAILoop 原版 APK 的设备需先卸载；从本仓库 v0.5.3 起
-  后续版本均可覆盖升级。
-- CI 绿色 ≠ 正式签名：Secrets 缺失时构建只打 WARN 并回退 debug 签名。验证方式见
-  lessons.md（解 APK Signing Block 抠证书，或 `git check-ignore` 确认本地签名文件不入库）。
+版本变更同步 `pubspec.yaml`、`lib/update/app_version.dart`、`test/update/update_checker_test.dart`，并更新 CHANGELOG。当前 CI 已含 Android debug ARM64 编译；Kotlin/Gradle 修改仍须本地实际构建和相应安装验证。
 
-## 本机开发环境注意事项
+```powershell
+Remove-Item Env:ZCODE_ANDROID_QA -ErrorAction SilentlyContinue
+& $Flutter build apk --debug --target lib/main.dart --target-platform android-arm64,android-x64 *> "$Evidence\$Stage-build.log"
+if ($LASTEXITCODE -ne 0) { throw 'APK build failed' }
+$Apk = Join-Path $RepoDir 'build\app\outputs\flutter-apk\app-debug.apk'
+$Badging = & "$BuildTools\aapt.exe" dump badging $Apk
+$BadgingText = $Badging -join [Environment]::NewLine
+if ($LASTEXITCODE -ne 0 -or $BadgingText -notmatch "package: name='com.zcoderemote.zcode_remote.dev'") {
+    throw 'unexpected product package'
+}
+$Badging | Select-String 'package:|native-code'
+& "$BuildTools\apksigner.bat" verify --print-certs $Apk
+if ($LASTEXITCODE -ne 0) { throw 'signature verification failed' }
+Get-FileHash -Algorithm SHA256 -LiteralPath $Apk
+```
 
-- **本机已有 Flutter SDK（2026-09-06 起）**：`D:\SoftWare\Develop\flutter`（3.47.2 stable，
-  Dart 3.13.2）。Git Bash 里 `export PATH="/d/SoftWare/Develop/flutter/bin:$PATH"` 后可
-  直接跑 `flutter analyze`（约 7s）/ `flutter test`（秒级）——**改码后先本地 analyze 再
-  推送，不要再用 CI 盲猜 lint**（0.5.7/0.6.0 都因盲猜多跑过红 CI）。
-- 注意 `flutter pub get` 会重新生成 `windows/flutter/generated_*`（本地插件注册），
-  属正常变更可一并提交。
-- UI 改动建议配合 MuMu 12 模拟器验证：`/d/SoftWare/Common/Mumu/emulator/MuMuPlayer-12.0/shell/adb.exe`
-  （emulator-5554），装 x86_64 APK；连接凭据走 app 内"粘贴链接添加"，`adb shell input text`
-  输入 URL 时用单引号保护 `&`。桌面端单设备限制：MuMu 连接会挤掉用户真机——
-  **验证完成后不要反复抢占连接**。
-- 本仓库 git 由源码副本新初始化，远程历史是镜像的原作者提交；推送走 SSH
-  （公钥 `zemote-dev-rog-strix` 已注册到 GitHub 账号）。
+签名需与待覆盖的开发包/冻结记录比较，不能把旧正式版证书当作开发包证书。只查看公开证书摘要，不输出 keystore 私钥或密码。旧仓库名、CI Secrets 配置和正式发布流程需现场核对，技能不自动执行推送/tag/Release。
+
+aapt 可能因依赖列出 32 位 ABI，必须检查实际 Flutter 引擎：
+
+```powershell
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$Zip = [System.IO.Compression.ZipFile]::OpenRead($Apk)
+try {
+    $Engines = @($Zip.Entries.FullName | Where-Object { $_ -match '^lib/[^/]+/libflutter\.so$' })
+    $Engines
+    foreach ($Required in @('lib/arm64-v8a/libflutter.so', 'lib/x86_64/libflutter.so')) {
+        if ($Engines -notcontains $Required) { throw "missing engine: $Required" }
+    }
+} finally {
+    $Zip.Dispose()
+}
+```
+
+## 5. 覆盖安装、只读启动与读回哈希
+
+仅在已授权验证设备上执行，先保存当前任务/阅读/草稿/主题。下面显式选择手机，平板需显式换目标。遇到安装失败先查原因，不改成卸载清数据。
+
+```powershell
+$Target = $Phone
+& $Adb -s $Target shell am force-stop com.zcoderemote.zcode_remote.dev
+& $Adb -s $Target install -r --abi x86_64 $Apk
+if ($LASTEXITCODE -ne 0) { throw 'install failed' }
+& $Adb -s $Target shell am start -n com.zcoderemote.zcode_remote.dev/com.zcoderemote.zcode_remote.MainActivity --ez quotaReadOnlyAudit true
+if ($LASTEXITCODE -ne 0) { throw 'launch failed' }
+```
+
+`--abi x86_64` 针对当前 MuMu；ARM64 真机按其实际 ABI 安装。audit 只阻止额度授予/消费/已读三个 RPC，不保护其他写操作；普通启动自动维护额度。不要将这个开关视为全应用安全隔离。
+
+```powershell
+$PackagePaths = @(& $Adb -s $Target shell pm path com.zcoderemote.zcode_remote.dev)
+if ($LASTEXITCODE -ne 0) { throw 'package lookup failed' }
+$BasePaths = @($PackagePaths | Where-Object { $_.Trim() -match '/base\.apk$' })
+if ($BasePaths.Count -ne 1) { throw 'expected one installed base APK' }
+$RemoteApk = $BasePaths[0].Trim() -replace '^package:', ''
+$InstalledApk = Join-Path $Evidence "$Stage-installed-base.apk"
+& $Adb -s $Target pull $RemoteApk $InstalledApk
+if ($LASTEXITCODE -ne 0) { throw 'APK readback failed' }
+$ExpectedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Apk).Hash
+$InstalledHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $InstalledApk).Hash
+if ($ExpectedHash -ne $InstalledHash) { throw 'installed APK does not match' }
+```
+
+读回后仍需启动和关键交互验证；安装 Success 不能证明正确文件和流程均已验收。
+
+## 6. 截图、专项诊断、只读探针
+
+```powershell
+python tooling/android_ui_probe.py --adb $Adb --target $Tablet --capture "build/visual-audit/$Stage/tablet-ROG-ready.png"
+if ($LASTEXITCODE -ne 0) { throw 'UI capture failed' }
+```
+
+先看本次截图/节点再点；该工具只输出带文字/描述的节点，空结果需结合截图和前台包判断。测试驱动器运行时不并发扫同一 Flutter 树。辅助功能专项单独构建诊断入口：
+
+```powershell
+$env:ZCODE_ANDROID_QA = 'true'
+try {
+    & $Flutter build apk --debug --target tooling/accessibility_probe.dart --target-platform android-x64
+    if ($LASTEXITCODE -ne 0) { throw 'diagnostic build failed' }
+} finally {
+    Remove-Item Env:ZCODE_ANDROID_QA -ErrorAction SilentlyContinue
+}
+```
+
+诊断会覆盖通用 app-debug.apk 路径；不允许随后把该文件当产品交付，必须重新以 lib/main.dart 构建并核对包名。诊断 APK 含故意复现 SDK 问题的对照页面。
+
+真实只读探针是 `tooling/remote_feature_probe.dart`，需要运行时安全注入 `ZEMOTE_PROBE_URL`；不得把链接写入此文档或脚本。窄模式为 `ZCODE_PROBE_CONNECTION_ONLY` / `ZCODE_PROBE_FILES_ONLY` / `ZCODE_PROBE_STATISTICS_ONLY`，一次只选与问题相关的模式，另设 `ZCODE_PROBE_ALIAS`。同端应用/浏览器先释放，探针结束释放连接并清除临时凭据变量。
+
+## 7. 阶段冻结与完成标准
+
+```powershell
+# $Stage 必须是新的小写字母/数字/连字符阶段标识。
+if (-not $ExpectedHash) { throw 'verify and read back the product APK first' }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Apk).Hash -ne $ExpectedHash) {
+    throw 'APK changed since verification; rebuild and verify the product entrypoint'
+}
+$StageApk = Join-Path $Evidence "ZcodeRemote-v2-$Stage-dev.apk"
+if (Test-Path -LiteralPath $StageApk) { throw 'choose a new stage; do not overwrite evidence' }
+Copy-Item -LiteralPath $Apk -Destination $StageApk
+python tooling/freeze_stage.py --stage $Stage
+if ($LASTEXITCODE -ne 0) { throw 'source freeze failed' }
+```
+
+freeze_stage 生成源码 ZIP、逐文件 manifest 和 SHA 文件，同阶段重新核验只允许源码与 APK 相同。根目录文档另行保存并链接；不要静默覆盖不同代码的旧阶段。
+
+交付记录写明官方依据、行为/视觉/原生证据、APK 包名/版本/签名/哈希、实际安装读回及代码状态。当前阶段通过不能关闭仍有必需项未完成的全局目标。平台条件不足单列，明确哪些已验证、哪些没有。

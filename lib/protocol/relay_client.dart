@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'connection_params.dart';
 import 'device_info.dart';
 import 'proof.dart';
+import 'observable.dart';
 
 enum RelayState {
   idle,
@@ -66,8 +66,8 @@ class RelayClient {
   int _socketGeneration = 0;
   bool _connectInFlight = false;
 
-  final _state = ValueNotifier<RelayState>(RelayState.idle);
-  ValueListenable<RelayState> get stateListenable => _state;
+  final _state = ValueSignal<RelayState>(RelayState.idle);
+  ProtocolValueListenable<RelayState> get stateListenable => _state;
   RelayState get state => _state.value;
 
   final _payloadController = StreamController<Map<String, dynamic>>.broadcast();

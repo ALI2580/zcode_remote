@@ -1,0 +1,167 @@
+{
+  "source": "https://zcode.z.ai/remote/v4",
+  "mainSha256": "f5010766237b56c3f0f8e6b110624d282d5375db62e2257846e2fe90e227469c",
+  "mode": "source-derived; runtime capability gates remain authoritative",
+  "groups": [
+    {
+      "id": "basics",
+      "zh": "基础设置",
+      "en": "Basics"
+    },
+    {
+      "id": "agentCapabilities",
+      "zh": "Agent 能力",
+      "en": "Agent capabilities"
+    },
+    {
+      "id": "dataAndStats",
+      "zh": "数据与统计",
+      "en": "Data and statistics"
+    }
+  ],
+  "sections": [
+    {
+      "id": "general",
+      "titleId": "settings.systemTitle",
+      "zh": "常规",
+      "en": "General",
+      "group": "basics",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "appearance",
+      "titleId": "settings.appearanceTitle",
+      "zh": "外观",
+      "en": "Appearance",
+      "group": "basics",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "modelProvider",
+      "titleId": "settings.modelProviderTitle",
+      "zh": "模型设置",
+      "en": "Model settings",
+      "group": "basics",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "memory",
+      "titleId": "settings.memory",
+      "zh": "记忆",
+      "en": "Memory",
+      "group": "agentCapabilities",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "subagents",
+      "titleId": "settings.subagents.title",
+      "zh": "子智能体",
+      "en": "Subagents",
+      "group": "agentCapabilities",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "plugin",
+      "titleId": "settings.plugins.title",
+      "zh": "插件",
+      "en": "Plugins",
+      "group": "agentCapabilities",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "mcp",
+      "titleId": "settings.mcpTitle",
+      "zh": "MCP 服务器",
+      "en": "MCP Servers",
+      "group": "agentCapabilities",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "skill",
+      "titleId": "settings.skills.title",
+      "zh": "技能",
+      "en": "Skills",
+      "group": "agentCapabilities",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "commands",
+      "titleId": "settings.commands.title",
+      "zh": "命令",
+      "en": "Commands",
+      "group": "agentCapabilities",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "automations",
+      "titleId": "settings.automations.title",
+      "zh": "自动化",
+      "en": "Automations",
+      "group": "agentCapabilities",
+      "webDefaultVisible": false,
+      "gate": "excluded by cb() in this build"
+    },
+    {
+      "id": "hooks",
+      "titleId": "settings.hooks.title",
+      "zh": "钩子",
+      "en": "Hooks",
+      "group": "agentCapabilities",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "indexing",
+      "titleId": "settings.indexing.title",
+      "zh": "索引库",
+      "en": "Indexing",
+      "group": "dataAndStats",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "browser",
+      "titleId": "settings.browser.title",
+      "zh": "浏览器控制",
+      "en": "Browser Use",
+      "group": "basics",
+      "webDefaultVisible": true,
+      "gate": null
+    },
+    {
+      "id": "computerUse",
+      "titleId": "settings.computerUse.title",
+      "zh": "电脑控制",
+      "en": "Computer Use",
+      "group": "basics",
+      "webDefaultVisible": false,
+      "gate": "desktop && cuaGrayEnabled"
+    },
+    {
+      "id": "usage",
+      "titleId": "settings.usageTitle",
+      "zh": "使用统计",
+      "en": "Usage stats",
+      "group": "dataAndStats",
+      "webDefaultVisible": true,
+      "gate": null
+    }
+  ],
+  "avatarMenu": [
+    "language submenu",
+    "theme submenu",
+    "usage and upgrade (account-dependent)",
+    "login/logout (account-dependent)",
+    "interface zoom (desktop only)"
+  ],
+  "extensionPolicy": "Keep vendor avatar and settings components; add client-specific settings separately."
+}

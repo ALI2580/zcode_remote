@@ -1,5 +1,44 @@
 # 踩坑记录（按主题分类，源自 CHANGELOG 与修复历史）
 
+## 0.1.0+10 新增经验（2026-09-09）
+
+- **可选链接与辅助功能重注册**：本机 Flutter 3.47.2 的单个 `SelectableText.rich` + 链接原生案例会从首次 5 个语义标签变为第二次 0 个；普通 Text/弹窗/浮层均正常。聊天正文改用 `SelectionArea` + Markdown 的 `Text.rich` 路径，保留跨段落选择复制，双端和真实 ROG 返回后重复查询正常。不要用频繁重启或产品强制常驻语义树代替修复。
+- **长按与路由生命周期**：长按开始就打开任务菜单，原生连续操作可失效；只重建分区行只能掩盖部分情况。最终使用 `onLongPressUp` 打开菜单，并以独立 Semantics long-press action 保留辅助功能操作；验证必须连续做置顶/取消、改名、未读、归档/恢复等。
+- **成员状态来源要带读取修订**：不能总让全局索引优先，也不能按响应到达顺序覆盖。`listPinnedTasks` / `listArchivedTasks` 记录启动修订号，晚于全局推送或本地确认的旧请求被丢弃；新的读取可以确认最新状态。
+- **原生测试等待具体条件**：聚焦文本框的光标可能持续排帧，重命名窗口不要无限 `pumpAndSettle`；平台回调内记录调用，在测试主流程断言，避免业务 catch 吞掉测试失败。
+- **共享模拟器要确认操作者**：本轮手机切换任务已由你确认是手动操作。页面变化先核实，不直接归因为恢复缺陷，不擅自切回测试开始时的旧任务。
+
+当前完整接续清单、环境命令、旧记录差异及验证规则见 [进度与开发手册](D:/WorkSpace/ZcodeRemote/references/v2-progress-todolist-2026-09-09.md)。
+
+## ZcodeRemote 原生迁移补充（2026-09-08）
+
+- 2026-09-09 `@` 文件候选真实超时根因：RPC 接收端错误套用了本地发送用的 512 KiB 分片大小，合法的 700 KiB 分片被静默丢弃；ACK 同时漏了 bridgeGeneration/recoveryId，官方 `a2t` 会按完整身份拒绝。接收按官方物理帧预算校验，ACK 复用完整 identity，代次/恢复标识不同的帧不进入当前栈。修复前 ROG-STRIX 文件查询 20/60 秒超时，修复后相同只读探针返回 6,180 项。不能仅通过小列表/小消息测试判定协议完整。
+
+- 2026-09-09 桥接恢复：官方 `workspace-reconnect-request` 只重连工作区后端，不能代替 `workspace-bridge-open`。旧实现 cheap path 成功就把旧 Channel 标为健康，已通过假对端复现。恢复需新建栈、等 Initialize、再通知订阅恢复；切栈前记住旧 bridge ID，否则 `_swap` 后再取旧 ID 会留下旧路由，迟到帧进入已关闭 stream。恢复不可在 15 次后静默停工；仅恢复失效工作区。
+- 握手绑定开始时的 Channel 与代次。旧 hello 不能在新通道发 initialize；旧失败不能无条件清空共享 `_handshakeFuture`，否则新通道会并发重复握手。待健康操作在 bridge dispose 时立即失败，不能把 dispose 当作已恢复。
+
+- 2026-09-09 实际 ALI 同任务 441px 对照发现：官方 `@container/composer` 在 `chat-composer-region` 上，位于带边框/12px padding 的输入 surface 外侧。不能用更内层工具条扣除 padding 后的宽度查询断点，否则 409px composer 会被当成 383px，模型名/思考条提前消失。Flutter 在 ConversationColumn 内、surface 外用 LayoutBuilder 取 region 宽，工具条仍按自身实际剩余空间约束文本；主辅各自查询，绝不用屏幕宽。对应 `surface padding does not move the official composer region breakpoints` 回归。
+- 官方完整任务索引使用省略字段表示非置顶/非归档（CCt 删除属性）；不得仅处理显式 false。全局索引与 local sessions-index/channel 列表按更新时间合并字段，空快照继续独立保存；旧 pin/archive 请求不能撤销更新的全局投影。
+- GLM 源选择失败后不能继续刷新旧账户的额度；重连时源 key 可能仍相同但账户已变，必须失效缓存。缺余额/分母不是零，Start/套餐/MCP 各自显示未知，不编造百分比。
+
+- Composer 异步操作应属于设备/工作区/会话，而不是只属于可销毁的输入组件；首发成功后迁移文本、配置、阅读、布局和导航缓存，即使路由已经退出也不能遗留旧 draft key。
+- prepare 响应需要请求代次保护；会话配置 ack 需要 revision 下界保护。重连不能重放另一个 pane 的 workspace draft，也不能让已失效的模型切换回复覆盖新选择；在旧请求结束前禁止新配置写入。
+- 连接断开不证明发送未到达。健康超时不重发；断线单次重放必须保持原 commandId，不能换成新操作。思考档位错误只能按返回元数据处理，禁止猜一个其他模型家族的默认值再写入。
+- 官方停止从 activeWorks 携带 expectedForegroundExecutionId，防止旧按钮停止下一轮任务；旧停止 ack 也不能把已经更新的运行投影标记成 stopping。
+- 官方队列确认是 UI 的 confirmationRequired，协议 status 不含该值；服务端 reasonCode 为 guard.heldQueueConfirmationStale。测试应检查真实回执字段，不能把 UI 返回值冒充协议字段。
+
+
+- 响应式工作面板保持同一 Stack 子树，通过 Positioned 宽度和 Offstage 调整摆放；不要在 Row 与覆盖层之间条件重建辅助 ChatPage。切换面板 tab 用 IndexedStack，隐藏时隔离焦点。五形态测试要断言订阅没有重复，而不只断言草稿文本仍存在。
+- 嵌入式 ChatPage 禁用自己的 `resizeToAvoidBottomInset`，由壳 Scaffold 统一避让；否则键盘底距计算两次。测试注入 300dp viewInsets 后，composer 应恰好上移 300dp。
+- `Color.withValues(alpha: .5)` 会替换原 alpha，不是把现有透明度乘半。官方 `border-border/50` 对 10% 线应得到 5%，需用 `ink.border.a * .5`；此前错误替换会把浅色分隔线变成重黑线。
+- 同一个 session 路由重复压栈会建立多个订阅和多个草稿编辑器。按 device/workspace/session + 当前 monitor 复用已有路由，新任务首次创建后更新路由身份；异步连接完成前后都校验最近导航代次。
+- Widget 测试中的设备保存若触发未模拟的 Android MethodChannel 会卡在 fake async。UI 故障注入测试显式提供合成 encrypt 回调；真实 Keystore 仍由 Android 集成测试验证。
+
+- 原生前台服务不会自动保留 Flutter 引擎。监控期间根页面 `SystemNavigator.pop` 若结束 Activity，就可能只剩静止通知。使用 `FlutterActivity.popSystemNavigator()` 在任务监控中将根 Activity 移到后台；移除最近任务/真正结束 Activity 时停止服务。集成测试必须验证后台还能调用 Dart→native 更新，而不只检查通知创建成功。
+- Flutter 的 `addPostFrameCallback` 不会自行请求新帧。暖启动通知点击可能发生在空闲帧之间，路由恢复应调用 `ensureVisualUpdate()`；否则点击看起来无响应。通知 URI 用于 PendingIntent 唯一性，关闭 Flutter 自动 URI 深链，路由统一交给包含设备/工作区/任务的 `TaskTarget`。
+- AndroidX Core 1.18.0 的 Live Updates compat 已编译验证；AGP 当前配置默认关闭 `resValues`，使用调试包专属应用名称时必须显式启用 `buildFeatures.resValues`。
+- 加密只发生在存储边界，不能把 `enc:` 数据放进运行时 URL 解析器。Android 加密失败不能静默降级明文；本地设备主键不得直接用配对 sid，以免通知 payload 泄露凭据标识。
+
 修 bug 或设计新功能前扫一遍对应主题；修复后把新经验追加到这里。
 
 ## 连接与重连
@@ -49,6 +88,10 @@
   历史时流式更新不拉扯；加载更早消息后若在底部则自动回底。
 
 ## UI / 主题
+
+- **自定义弹窗必须继承局部主题**（V2 细节批）：`showGeneralDialog` 不像 `showMenu` 自动捕获触发器的主题。用 `InheritedTheme.capture` 包住新路由内容；弹窗内部的 `DefaultTextStyle` 应使用 `merge` 或基于当前 TextTheme，避免抹掉字体。合成截图的方块字并不一定是系统缺字，先检查跨 Overlay 的字体继承。
+- **Composer 高度按容器拆解核对**（V2 细节批）：官方输入正文 `min-h-10`=40px，外层 `gap-3`=12px，按钮 28px，加 12px 内边距及边框后常态约 106px。只把按钮从 32 改为 28，而保持单行输入的自然高度，会使整体比官方矮约 19px。
+- **官方 MCP 展示不是把协议名首字母大写**（V2 细节批）：优先 V4 `display.kind=mcp_tool` 的 serverName/toolName，再按 `mcp__server__tool` 拆解和去掉重复前缀；未知工具保留明确回退，原名进入可展开详情。思考 durationMs 缺失时官方文案是“持续了几秒”，不能拼成“思考 · 持续了”。
 
 浅色主题下"白底白字/不可见"是本仓库反复出现的回归类型，中过招的组件：代码块与行内代码、
 推理面板、工具卡片、状态点、Diff 内容、骨架屏、Markdown 标题/列表/表格（0.2.1/0.3.2/
@@ -194,3 +237,30 @@
 **操作行时机（官方语义补全）**：复制/点赞/点踩/分叉只在轮次结束后出现——门控必须用**轮次级** running（`_rowIsActive`：流式文本/执行中/待确认/turnHeader running 任一即压住），按文本段自己的 streaming 判定会在工具调用间隙闪出按钮。
 
 **工具族 id 容错**：桌面流式下发的 toolName 大小写/下划线形态不定（`webSearch`/`web_search`），MCP 形态是 `server__tool`。`resolveToolFamily`（公开顶层函数，有单测）先精确归一化匹配、`__` 尾段解析，查询类模糊回退保持「搜索」族标签与 earth/search 图标。
+# 草稿持久恢复与原生附件验证（2026-09-09）
+
+- 保存阅读锚点不等于完成冷恢复：先加载到所在历史页，再定位未构建的变高消息。列表使用固定版本 `super_sliver_list 0.4.1` 的索引定位，继续以实际消息 key 和局部偏移校准；只渲染所需范围。组件依据见 [维护者说明](https://github.com/superlistapp/super_sliver_list)。
+- 原生阅读测试发现，ScrollController 通知发生在布局之前；此时直接 `localToGlobal` 记录的是上一帧位置，下一帧恢复会抵消刚发生的拖动。只由真实用户滚动设置待记录标记，在布局结束后记录锚点，并让它优先于恢复跳转。问题不在 SelectableText，保留原文本选择组件。回归含真实文字区域拖动，不能仅检查 following=false。
+
+- 文件选择器返回的临时 URI 不能作为重启后的唯一来源。选中时复制到应用私有缓存，先 `.part` 写入、同步再重命名；保存随机 token / SHA-256 与元数据，读取验证路径及摘要。不存在或损坏时保留可见条目，禁止静默发送缺文件的文本。
+- 保存不能只做普通防抖：提交前和后台切换须 flush，写入串行合并且保留上一有效快照。等待远端回执时保存不确定状态，重启不自动重发；远端已接受后的本地保存失败不能变成“远端发送失败”。
+- 设备移除与存储读取也会竞态。恢复前后检查已移除设备，涵盖编辑器、配置、导航、阅读和面板；仅清当前 map 不能防止 await 后复活旧条目。回归见 `recovery_test.dart`，保留了修复前失败日志。
+- `/plan` 解析后的异步模式准备属于整个提交事务；在进入准备时就参与发送去重，不能等 RPC 发出后才置 busy。
+- Flutter `test integration_test` 默认在退出时卸载测试应用。验证进程恢复时用独立 `.qa` 包并显式 `--no-uninstall`；验证入口启动先断言包名，不将测试入口装入保留真实数据的 `.dev`。
+- 集成测试期间运行 uiautomator 会临时开启语义树，导致测试结束 `SemanticsHandle was active`。选择系统文件时使用 ADB 原生截图定位点击；不改变业务断言来规避真正缺陷。
+
+
+## 2026-09-09：额度重置确认与已打开菜单的动态环境
+
+- 重置 RPC 返回成功与重置真正完成是两个状态。比较请求前后服务端 `latest*ResetHistory.usedAt`；旧历史不能确认本次请求。健康超时保留 idempotencyKey；已受理却未查到新历史，不再提交新请求，只刷新状态。
+- 额度满值只能基于服务端确认投影。记录额度请求开始时可见的完成记录，旧的在途额度查询不能清除稍后完成的重置投影。
+- `showComposerPopover` 不能在调用时捕获固定底色和 MediaQuery。原生大字号/主题检查复现白菜单留在深色页面；修复后路由内订阅主题与 MediaQuery，保留源字体但重新计算颜色和位置。
+- Scaffold 可能已为 composer 消费 keyboard viewInsets，原上下文底部会是 0；浮层定位同时取 route 的完整 inset 和本地覆盖值，不能只读 composer 上下文。
+- 模态标题的关闭按钮和操作行不要让 Material 默认触摸占位撑高整个布局。官方视觉 24/32px 控件采用显式 shrinkWrap，窄屏仍保留滚动和可达按钮。
+
+
+### 统计页的共享状态、时间范围与原生测试
+
+新路由 initState 不能直接调用会同步通知底层页面的共享控制器刷新；先用完整 More 进入/返回回归复现 build 期间 setState，再将首次读移到首帧后。应用累计 all 与范围 7d/30d 分开，应用/套餐各自保存范围，避免切页时串用。
+
+原生测试不要在经过平台异步回调的假 RPC handler 中执行 Flutter 测试断言：先保存调用参数，再在测试主流程 await 完成后检查。语言/字号变化后不要持有先前 ScrollPosition，重新查当前滚动区域。普通 Flutter 单元测试中的偏好持久化 await 使用 tester.runAsync，避免停在假时钟内。

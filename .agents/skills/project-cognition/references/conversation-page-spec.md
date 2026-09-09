@@ -1,8 +1,10 @@
 # 官方对话页全量规格（Conversation Page Master Spec）
 
+本文件保留历史结构取证。当前 V2 适用性以 [固定资产基线](../../../../references/official-web-baseline.json)、[当前 UI 记录](../../../../references/official-web-ui.md)、[功能验收表](../../../../references/v2-goal-acceptance.md) 和代码为准。下面当时的资源一致性核对不是对未来构建的保证，也不是当前功能已实现/验收的证明。
+
 > 2026-09-07 从 zcode.z.ai/remote/v4 bundle（app_version 3.7.7 构建）全量逆向。
 > 抽取物：880 个 `chat.*` i18n 键中文值（/tmp/chat_i18n.json，本文件沉淀关键部分）、
-> 主 bundle 组件 class 串与逻辑门控。**这是对话页复刻的权威清单**；
+> 主 bundle 组件 class 串与逻辑门控。这是当时对话页复刻的结构清单，当前使用须按上述基线复核；
 > 视觉/样式细则见 official-web-ui.md，本文件管「结构 + 内容 + 逻辑」。
 > **版本核对（2026-09-07）**：桌面端 3.7.7 → 3.11.2 后重抓 index.html 与全部资产，
 > 主 bundle/IntlProvider/CSS 的 MD5 与 3.7.7 时代逐字节一致（Vite 内容哈希文件名全部相同）

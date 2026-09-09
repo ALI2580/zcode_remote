@@ -29,5 +29,5 @@ jobs:
       - name: Run unit tests
         run: flutter test
 
-      - name: Compile smoke (web)
-        run: flutter build web --release
+      - name: Compile Android native integration
+        run: flutter build apk --debug --target-platform android-arm64

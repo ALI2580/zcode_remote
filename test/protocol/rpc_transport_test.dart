@@ -87,6 +87,69 @@ void main() {
     );
   });
 
+  test('accepts legal inbound fragments larger than the local send chunk',
+      () async {
+    final bytes = Uint8List(700 * 1024);
+    for (var i = 0; i < bytes.length; i++) {
+      bytes[i] = i % 251;
+    }
+    final frame = {
+      'zcode_type': 'rpc-frame',
+      'bridgeSessionId': 'bridge-1',
+      'seq': 1,
+      'messageSeq': 1,
+      'fragmentIndex': 0,
+      'fragmentCount': 1,
+      'messageBytes': bytes.length,
+      'checksum': {'algorithm': 'crc32', 'value': Crc32.hexOf(bytes)},
+      'dataBase64': base64.encode(bytes)
+    };
+    expect(utf8.encode(jsonEncode(frame)).length,
+        lessThan(RpcFrameTransport.maxPhysicalFrameBytes));
+    transport.acceptPayload(frame);
+    await Future<void>.delayed(Duration.zero);
+    expect(received, hasLength(1));
+    expect(received.single, bytes);
+    expect(sent.single['ackMessageSeq'], 1);
+  });
+
+  test('ack preserves complete bridge identity and rejects another generation',
+      () async {
+    final frames = <Map<String, dynamic>>[];
+    final client = RpcFrameTransport(
+        bridgeSessionId: 'identity-bridge',
+        bridgeGeneration: 7,
+        recoveryId: 'recovery-7',
+        sendPayload: frames.add);
+    addTearDown(client.dispose);
+    final incoming = <Uint8List>[];
+    client.messages.listen(incoming.add);
+    final frame = {
+      'zcode_type': 'rpc-frame',
+      'bridgeSessionId': 'identity-bridge',
+      'bridgeGeneration': 7,
+      'recoveryId': 'recovery-7',
+      'seq': 1,
+      'messageSeq': 1,
+      'fragmentIndex': 0,
+      'fragmentCount': 1,
+      'messageBytes': 3,
+      'dataBase64': base64.encode([1, 2, 3]),
+    };
+    expect(client.acceptPayload({...frame, 'bridgeGeneration': 6}), isFalse);
+    expect(client.acceptPayload({...frame, 'recoveryId': 'old'}), isFalse);
+    client.acceptPayload(frame);
+    await Future<void>.delayed(Duration.zero);
+    expect(incoming, hasLength(1));
+    expect(frames.single, {
+      'zcode_type': 'rpc-frame-ack',
+      'bridgeSessionId': 'identity-bridge',
+      'bridgeGeneration': 7,
+      'recoveryId': 'recovery-7',
+      'ackMessageSeq': 1,
+    });
+  });
+
   test('non-rpc-frame passes through unconsumed', () {
     expect(
       transport.acceptPayload({'zcode_type': 'workspace-list-updated'}),

@@ -1,167 +1,259 @@
 import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
 import '../protocol/connection_params.dart';
+import '../protocol/id.dart';
 import 'credential_cipher.dart';
 
-/// One connected desktop machine.
+// Uri.origin accepts HTTP(S), while WSS identifies the same secure host.
+String _connectionOrigin(ZemoteConnectionParams params) =>
+    params.source.replace(scheme: 'https').origin;
+
 class Device {
+  const Device(
+      {required this.id,
+      required this.label,
+      required this.url,
+      required this.addedAt,
+      required this.lastUsedAt,
+      this.machineId,
+      this.origin});
   final String id;
-  String label;
+  final String label;
+
+  /// Plaintext in memory; encryption happens at the persistence boundary.
   final String url;
   final int addedAt;
-  int lastUsedAt;
-
-  Device({
-    required this.id,
-    required this.label,
-    required this.url,
-    required this.addedAt,
-    required this.lastUsedAt,
-  });
-
-  /// Parses the remote-control URL. Returns null when the URL is invalid.
+  final int lastUsedAt;
+  final String? machineId;
+  final String? origin;
   ZemoteConnectionParams? get params => ZemoteConnectionParams.parse(url);
+  String? get endpointOrigin {
+    final connection = params;
+    return origin ??
+        (connection == null ? null : _connectionOrigin(connection));
+  }
 
-  Device copyWith({String? label, int? lastUsedAt}) => Device(
-        id: id,
-        label: label ?? this.label,
-        url: url,
-        addedAt: addedAt,
-        lastUsedAt: lastUsedAt ?? this.lastUsedAt,
-      );
-
+  Device copyWith(
+          {String? id,
+          String? label,
+          String? url,
+          int? lastUsedAt,
+          String? machineId,
+          String? origin}) =>
+      Device(
+          id: id ?? this.id,
+          label: label ?? this.label,
+          url: url ?? this.url,
+          addedAt: addedAt,
+          lastUsedAt: lastUsedAt ?? this.lastUsedAt,
+          machineId: machineId ?? this.machineId,
+          origin: origin ?? this.origin);
   Map<String, dynamic> toJson() => {
         'id': id,
         'label': label,
         'url': url,
         'addedAt': addedAt,
         'lastUsedAt': lastUsedAt,
+        'machineId': machineId,
+        'origin': origin,
       };
-
   factory Device.fromJson(Map<String, dynamic> json) => Device(
-        id: json['id'] as String,
-        label: json['label'] as String? ?? '',
-        url: json['url'] as String,
-        addedAt: json['addedAt'] as int? ?? 0,
-        lastUsedAt: json['lastUsedAt'] as int? ?? json['addedAt'] as int? ?? 0,
-      );
+      id: json['id'] as String,
+      label: json['label'] as String? ?? '桌面设备',
+      url: json['url'] as String,
+      addedAt: json['addedAt'] as int? ?? 0,
+      lastUsedAt: json['lastUsedAt'] as int? ?? json['addedAt'] as int? ?? 0,
+      machineId: json['machineId'] as String?,
+      origin: json['origin'] as String?);
 }
 
-/// Persists the device list. The connection URL (which embeds `sid`/`hash`
-/// credentials) is encrypted at rest on Android via [CredentialCipher]; other
-/// platforms fall back to plaintext (same constraint as the desktop web
-/// client's own storage).
 class DeviceStore extends ChangeNotifier {
-  static const _prefsKey = 'zcode_remote_devices_v1';
-
+  DeviceStore(
+      {Future<String?> Function(String)? encrypt,
+      Future<String?> Function(String)? decrypt,
+      bool? requireEncryption})
+      : _encrypt = encrypt ?? CredentialCipher.encrypt,
+        _decrypt = decrypt ?? CredentialCipher.decrypt,
+        _requireEncryption = requireEncryption ?? CredentialCipher.isSupported;
+  static const prefsKey = 'zcode_remote_devices_v1';
+  final Future<String?> Function(String) _encrypt;
+  final Future<String?> Function(String) _decrypt;
+  final bool _requireEncryption;
   final List<Device> _devices = [];
+  Future<void>? _loading;
+  Future<void> _mutations = Future.value();
   bool _loaded = false;
-
+  int _clock = 0;
   List<Device> get devices => List.unmodifiable(_devices);
   bool get loaded => _loaded;
+  Device? get lastUsed => _devices.isEmpty
+      ? null
+      : (_devices.toList()
+            ..sort((a, b) => b.lastUsedAt.compareTo(a.lastUsedAt)))
+          .first;
 
-  Device? get lastUsed {
-    if (_devices.isEmpty) return null;
-    Device? best;
-    for (final d in _devices) {
-      if (best == null || d.lastUsedAt > best.lastUsedAt) best = d;
-    }
-    return best;
-  }
-
-  Future<void> load() async {
-    if (_loaded) return;
+  Future<void> load() => _loading ??= _load();
+  Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_prefsKey);
-    if (raw != null && raw.isNotEmpty) {
+    final raw = prefs.getString(prefsKey);
+    final items = <Device>[];
+    bool migrated = false;
+    if (raw != null) {
+      dynamic list;
       try {
-        final list = jsonDecode(raw) as List;
-        _devices
-          ..clear()
-          ..addAll(list
-              .whereType<Map>()
-              .map((e) => Device.fromJson(e.cast<String, dynamic>())));
+        list = jsonDecode(raw);
       } catch (_) {
-        // Corrupted store — start fresh.
-        _devices.clear();
+        list = null;
+      }
+      if (list is List) {
+        for (final entry in list.whereType<Map>()) {
+          try {
+            var device = Device.fromJson(entry.cast<String, dynamic>());
+            if (CredentialCipher.isEncrypted(device.url)) {
+              final plain = await _decrypt(device.url);
+              if (plain != null) device = device.copyWith(url: plain);
+            } else if (_requireEncryption) {
+              migrated = true;
+            }
+            final params = device.params;
+            if (params != null) {
+              if (device.id == params.deviceSid) {
+                device = device.copyWith(id: generateUuid());
+                migrated = true;
+              }
+              device = device.copyWith(
+                  machineId: params.deviceMid,
+                  origin: _connectionOrigin(params));
+            }
+            items.add(device);
+            if (device.lastUsedAt > _clock) _clock = device.lastUsedAt;
+          } catch (_) {
+            // One malformed row must not discard other devices.
+          }
+        }
       }
     }
+    if (migrated) await _persist(items);
+    _devices
+      ..clear()
+      ..addAll(items);
     _loaded = true;
     notifyListeners();
   }
 
-  Future<void> _save() async {
+  Future<void> _persist(List<Device> devices) async {
+    final output = <Map<String, dynamic>>[];
+    for (final device in devices) {
+      final map = device.toJson();
+      if (!CredentialCipher.isEncrypted(device.url)) {
+        final encrypted = await _encrypt(device.url);
+        if (_requireEncryption && encrypted == null) {
+          throw StateError('无法加密设备凭据，请重试');
+        }
+        map['url'] = encrypted ?? device.url;
+      }
+      output.add(map);
+    }
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-        _prefsKey, jsonEncode(_devices.map((d) => d.toJson()).toList()));
-  }
-
-  /// Adds a device from a remote-control URL. Returns the new device, or
-  /// throws [FormatException] when the URL can't be parsed.
-  Future<Device> addUrl(String url, {String? label}) async {
-    final params = ZemoteConnectionParams.parse(url);
-    if (params == null) {
-      throw FormatException('无效的远程控制链接');
+    if (!await prefs.setString(prefsKey, jsonEncode(output))) {
+      throw StateError('无法保存设备');
     }
-    final id = params.deviceSid.isEmpty
-        ? '${DateTime.now().microsecondsSinceEpoch}'
-        : params.deviceSid;
-    // Re-add: reuse the existing id so a re-scanned device keeps its label
-    // and its already-encrypted stored URL.
-    final existing = _devices.where((d) => d.id == id).firstOrNull;
-    final now = _nowMs();
-    if (existing != null) {
-      final updated = existing.copyWith(label: label ?? existing.label, lastUsedAt: now);
-      _devices[_devices.indexOf(existing)] = updated;
-      await _save();
-      notifyListeners();
-      return updated;
-    }
-    final encryptedUrl = await CredentialCipher.encrypt(url) ?? url;
-    final device = Device(
-      id: id,
-      label: label ??
-          (params.deviceSid.isEmpty ? '未命名设备' : params.deviceSid),
-      url: encryptedUrl,
-      addedAt: now,
-      lastUsedAt: now,
-    );
-    _devices.add(device);
-    await _save();
-    notifyListeners();
-    return device;
   }
 
-  Future<void> remove(String id) async {
-    _devices.removeWhere((d) => d.id == id);
-    await _save();
+  Future<T> _mutate<T>(Future<T> Function() action) {
+    final result = _mutations.then((_) async {
+      await load();
+      return action();
+    });
+    _mutations = result.then<void>((_) {}).catchError((_) {});
+    return result;
+  }
+
+  Future<void> _commit(List<Device> next) async {
+    await _persist(next);
+    _devices
+      ..clear()
+      ..addAll(next);
     notifyListeners();
   }
 
-  Future<void> rename(String id, String label) async {
-    final index = _devices.indexWhere((d) => d.id == id);
-    if (index < 0) return;
-    _devices[index] = _devices[index].copyWith(label: label);
-    await _save();
-    notifyListeners();
-  }
-
-  Future<void> touch(String id) async {
-    final index = _devices.indexWhere((d) => d.id == id);
-    if (index < 0) return;
-    _devices[index] = _devices[index].copyWith(lastUsedAt: _nowMs());
-    await _save();
-    notifyListeners();
-  }
-
-  int _clock = 0;
-
-  /// Monotonic millisecond clock: never returns a value equal to or lower
-  /// than the previous call, so rapid touches always order correctly even
-  /// when wall-clock time hasn't advanced.
+  Future<Device> addUrl(String url, {String? label}) => _mutate(() async {
+        final params = ZemoteConnectionParams.parse(url);
+        if (params == null || params.source.host.isEmpty) {
+          throw const FormatException('无效的远程控制链接');
+        }
+        final existing = _devices
+            .where((device) =>
+                device.endpointOrigin == _connectionOrigin(params) &&
+                ((params.deviceMid != null &&
+                        (device.machineId ?? device.params?.deviceMid) ==
+                            params.deviceMid) ||
+                    device.params?.deviceSid == params.deviceSid))
+            .firstOrNull;
+        final now = _nowMs();
+        final device = Device(
+            id: existing?.id ?? generateUuid(),
+            label: label?.trim().isNotEmpty == true
+                ? label!.trim()
+                : existing?.label ?? params.deviceName ?? '桌面设备',
+            url: url.trim(),
+            addedAt: existing?.addedAt ?? now,
+            lastUsedAt: now,
+            machineId: params.deviceMid,
+            origin: _connectionOrigin(params));
+        final next = _devices.toList();
+        if (existing == null) {
+          next.add(device);
+        } else {
+          next[next.indexOf(existing)] = device;
+        }
+        await _commit(next);
+        return device;
+      });
+  Future<void> remove(String id) => _mutate(
+      () => _commit(_devices.where((device) => device.id != id).toList()));
+  Future<Device> updateLink(String id, String url, {String? label}) =>
+      _mutate(() async {
+        final original =
+            _devices.where((device) => device.id == id).firstOrNull;
+        final params = ZemoteConnectionParams.parse(url);
+        if (original == null || params == null || params.source.host.isEmpty) {
+          throw const FormatException('设备或链接无效');
+        }
+        if (original.machineId != null &&
+            params.deviceMid != null &&
+            original.machineId != params.deviceMid) {
+          throw const FormatException('链接属于另一台设备');
+        }
+        if (original.endpointOrigin != null &&
+            original.endpointOrigin != _connectionOrigin(params)) {
+          throw const FormatException('连接来源不一致');
+        }
+        final updated = original.copyWith(
+            url: url.trim(),
+            label: label?.trim().isNotEmpty == true
+                ? label!.trim()
+                : original.label,
+            machineId: params.deviceMid,
+            origin: _connectionOrigin(params),
+            lastUsedAt: _nowMs());
+        await _commit([
+          for (final device in _devices) device.id == id ? updated : device
+        ]);
+        return updated;
+      });
+  Future<void> rename(String id, String label) => _mutate(() async {
+        if (label.trim().isEmpty) return;
+        await _commit([
+          for (final device in _devices)
+            device.id == id ? device.copyWith(label: label.trim()) : device
+        ]);
+      });
+  Future<void> touch(String id) => _mutate(() => _commit([
+        for (final device in _devices)
+          device.id == id ? device.copyWith(lastUsedAt: _nowMs()) : device,
+      ]));
   int _nowMs() {
     final now = DateTime.now().millisecondsSinceEpoch;
     _clock = now > _clock ? now : _clock + 1;

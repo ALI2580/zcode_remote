@@ -1,0 +1,421 @@
+{
+  "source": "https://zcode.z.ai/remote/v4",
+  "createdAt": "2026-09-08T08:28:30.700Z",
+  "assets": {
+    "/remote/v4": {
+      "bytes": 19959,
+      "sha256": "485367550d5a73b499e14a38247d903af72a03b4fdcb2e20346868ad7b6c9573",
+      "contentType": "text/html"
+    },
+    "/remote/v4/assets/jsx-runtime-ZR5CkqIr.js": {
+      "bytes": 424,
+      "sha256": "4b8cdfeca77a039955403d0e1b5df4f226311228c70e2b3fa9428003ed9fbc86",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-Bj-mKKzh.js": {
+      "bytes": 1264,
+      "sha256": "448b0ded4422895f43ed47284524e210589901a06d7f7cd4d2000dbc83b8ccde",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/preload-helper-Di38CId4.js": {
+      "bytes": 1203,
+      "sha256": "e6ed0425e38cdf28b8bccafda082b70df12dc227d34e069ee5e909955479c963",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/react-DJIj0nWL.js": {
+      "bytes": 7521,
+      "sha256": "50911bc9dd5556ebbb70af984dcfc188eda76c2be0d22cde0104e7df7e536c80",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/bundle-mjs-BfbS5Wiv.js": {
+      "bytes": 27258,
+      "sha256": "aa0414b9e05a4fba964926230a63f419ed115614f8ace7608f018ba90975c9ce",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/utils-CzR67rCy.js": {
+      "bytes": 252,
+      "sha256": "dc983f6543f8df7854b29b7ab8c8c9a864835830026c1ac0845582d06bebfc99",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/triangle-alert-WsNff4EO.js": {
+      "bytes": 281,
+      "sha256": "c9b31ef60909368b7b8612f2a456a069d9efe6cacdffc6da8cdd1d03e9b8d1ac",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/info-BaQThRYl.js": {
+      "bytes": 220,
+      "sha256": "078443bf734e29bee29a50134213ced90ef9e17aae5a38ffe9463e8925ad7122",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/button-CZIaFsjU.js": {
+      "bytes": 5307,
+      "sha256": "2049851ccc498aca1a229911cd8b612c842a72b0f8bf734f9762fcf7d9ee39eb",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/x-FufZ8lYU.js": {
+      "bytes": 170,
+      "sha256": "abb85a203bce4f0ee05f545d377bee26a563acfef8f9b7b1407cb881635b7a99",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/index-nOVzQNKW.js": {
+      "bytes": 4779908,
+      "sha256": "f5010766237b56c3f0f8e6b110624d282d5375db62e2257846e2fe90e227469c",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/createLucideIcon-BTVFuwAD.js": {
+      "bytes": 1660,
+      "sha256": "2f492c47fc83245a897ec94f20d6341cbe89823a15b933d1ee2b7a46fb104ea2",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/linearClosed-Cuo0wLSm.js": {
+      "bytes": 840,
+      "sha256": "8708e5b84d68ceccf29f916e95ea8327be4a1ff12b7e69d70c2386c9d2fbfd65",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/react-dom-CbuiB7QO.js": {
+      "bytes": 3568,
+      "sha256": "00bb3f2bbfd17906adaacdfcddc80334389b64ba62fa45850dcc11a7713798fe",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/dist-DmBvo4GG.js": {
+      "bytes": 1860,
+      "sha256": "450d29d8f4195c7ae5b1b092ef23fca08762aa112f07fe0e4be53e0bc7fdeecb",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/string-DhPFM08H.js": {
+      "bytes": 8409,
+      "sha256": "fff36d1c5520cf6be8d0161f29ba5e8136fb208b000438d42f937336b586bcf9",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/src-BwV4lmkS.js": {
+      "bytes": 37293,
+      "sha256": "7bd6b42896be7a9a9c1bb5e49c87b9952cccd081bbfe0c2d09690e3a722307c6",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/math-DfQcXj5m.js": {
+      "bytes": 310,
+      "sha256": "201dc059f2430a5917a90e07b6ccfbf8b94d44c59c69808e8c210541162dc595",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/toast-HRdaJheI.js": {
+      "bytes": 237483,
+      "sha256": "e1b5f713c1e04c05c2fa05fe0fe1a06de8419487310c9967f95e69a49bae671c",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-ICPOFSXX-iXDo5I8M.js": {
+      "bytes": 214894,
+      "sha256": "89bb7ca1e949a05ca15d1c916a17556c4f00590d5f4faac1c18944ff97696471",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/catmullRom-D2-O7NqA.js": {
+      "bytes": 2722,
+      "sha256": "41f95db2a1fc3be989e073fdbb46c32cac7ef0e31a7616fc1d15b236375dd118",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/step-CUlGxJY0.js": {
+      "bytes": 6996,
+      "sha256": "b7327858a0b23e7c4973c99176f720cb00c32bd538fea7f3d94b947d961ea1e2",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/identity-BD_1HS5g.js": {
+      "bytes": 7510,
+      "sha256": "b759ba10b2751c73d67f99423b6c753ec7fda35637b650cd60ac0a423806759d",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-5PVQY5BW-Bhs1I3_F.js": {
+      "bytes": 17924,
+      "sha256": "91b9ebafd5e214e7a51e8a42e88912047bb86436c1037840e3c0825a793a2034",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/isEmpty-WzPW3d10.js": {
+      "bytes": 1164,
+      "sha256": "243a6f2cc5bef68ec304826cb349b115bb9de68afb9125d813554a5645f8228f",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/arrow-left-from-line-BpBWhNda.js": {
+      "bytes": 226,
+      "sha256": "58acd37fb1bc0c2543d224ebf2ee62ad9867c1db4f37a91e074c6431587ef5c9",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/arrow-left-Da01ZPFK.js": {
+      "bytes": 181,
+      "sha256": "5feb5d136112cbe060c631414b83c91820e0953fa50632114bfd2c2c7e07b1a5",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-U2HBQHQK-B1CX917C.js": {
+      "bytes": 52527,
+      "sha256": "274af49b5279ed2671f16c15b2cd6b451816120e8625eddaf1661b7ce86f2664",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/arrow-right-to-line-D9pgF0ng.js": {
+      "bytes": 227,
+      "sha256": "aeda0be7d3b4c0c5b5155b0b000a95662ca835bcb3f50f019f704c39ee416f5f",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/arrow-right-BKt8bjPg.js": {
+      "bytes": 181,
+      "sha256": "43a5a0f146d1e1ba2f8cfb3ba8c88c0801366a24a4cd07e009bd62ac79613d57",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/check-DUr5HH81.js": {
+      "bytes": 140,
+      "sha256": "ea309b7976649fe14c5dca518dcf7544b87e45bf9e4c6a4b540c348db5c285f7",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chevron-down-ZroHwmCw.js": {
+      "bytes": 144,
+      "sha256": "14b095556474ec8283142db3e23733dd25dfb1cf223c0c5dc206bdf792f81fc8",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-BO2N2NFS-4Ytn9XPz.js": {
+      "bytes": 448653,
+      "sha256": "ee03a5ee883646055eda448992ce902775968ee9819f2625fd80f313841b45d4",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/katex-BTKZ3E6l.js": {
+      "bytes": 257047,
+      "sha256": "c3878e8565188bde1b5cb14f3cf3b83d7ebc24709e19801c8416d2f9179e423a",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chevron-right-DhmdfLuE.js": {
+      "bytes": 146,
+      "sha256": "95a23a4e2f80cd7275dac8da84c58169eb98fc6030aef61ed77cc03d9e2cd97a",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chevron-up-DNn_8ieT.js": {
+      "bytes": 144,
+      "sha256": "15c4d6a4156d28b4d4d130696afcd026579ca0c5a919393fa26817ec12591c2e",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/circle-plus-DBYmDNZ2.js": {
+      "bytes": 223,
+      "sha256": "a64fd129c13d288549f5a1208fe30e56ca4b538d55f7580d63cbfc3386b3de98",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/circle-minus-DHZTbcW4.js": {
+      "bytes": 188,
+      "sha256": "52b7a4134dcd46df45ded0e6bc57c7c5a1e5f9ab5fc03178c999a829bfe5790c",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/download-DSDr92XZ.js": {
+      "bytes": 248,
+      "sha256": "0fa8817cb5feeb754144ec7a3593cb4e2753316436feca4c33332c463f47147d",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/copy-0ADQv_r1.js": {
+      "bytes": 252,
+      "sha256": "eebd50d688a47f13c7760d7791e519875311955052d8e98121e66d4fe31138f0",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/image-off-CJzhheYk.js": {
+      "bytes": 487,
+      "sha256": "361bdcd413fe5d76dc98b3a1ef31087e5da5b239df6f2fbbab8dd6e07d5a46f5",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/image-CaByrs4b.js": {
+      "bytes": 285,
+      "sha256": "ae8363d31914036ee65e84767e6a884cde5a7115a78332e58ca962306f6df2bb",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/minus-DvpHwI-E.js": {
+      "bytes": 133,
+      "sha256": "73fba09fc29406bb85c62bf700939502e0fd2fd56907bc84b2f18dddb3086195",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/maximize-2-Dvo0PpGG.js": {
+      "bytes": 254,
+      "sha256": "706c209e344c873d579428b5b108ea4550a241bf82d5c76855dd75a283d19a59",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/loader-circle-DMLiV1N5.js": {
+      "bytes": 160,
+      "sha256": "c06b63abee7a728a1286f082cf66d2b4bf5051fd9b25aa5dec5a928b5f242f83",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/plus-CKZCj4tf.js": {
+      "bytes": 169,
+      "sha256": "7560ed5aa83aa0dc78a9016031d3c841daa061d97a347760101de0674a31a20f",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/external-link-lYLOfPbq.js": {
+      "bytes": 267,
+      "sha256": "2e9e551f09d16e9a980840598ccfcf401321be47614be9b20bcd10c352381d55",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/text-wrap-MCgjqoZE.js": {
+      "bytes": 271,
+      "sha256": "1b9fd6d4edf30c5a037407fcf3cc9cd7b4eb6e85981d6eeb901800bd507f31b1",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/trash-2-CXibtnCE.js": {
+      "bytes": 344,
+      "sha256": "d9fa87be111bce7425f0691d2c7ded8adabe4dce0ff33bceabcdd9988b397faa",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-ZZ45TVLE-BULK5mzr.js": {
+      "bytes": 952,
+      "sha256": "daa34134bcd0a2912b9b7d8ae87b8e92bd41fc82a2e10eb183381c55d45cf565",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/array-SPRU9Nlq.js": {
+      "bytes": 107,
+      "sha256": "63126646dbf611a0cf9e2293a9f636ac3c93c815a8f7d1e97d783151ab8529b9",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-X2U36JSP-CjLRZZD3.js": {
+      "bytes": 1838,
+      "sha256": "a73d3c731ac7996ca12423ae395e10b222cd8cba05adb962cc98464db66293a6",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/path-BCYueJTI.js": {
+      "bytes": 305,
+      "sha256": "7bb8d077b896a57527dc7417b0f5fa3c83efbe64f597cbb9468cfaee8cfc4192",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-5FUZZQ4R-Z7nZr5Yw.js": {
+      "bytes": 97914,
+      "sha256": "69257e19c0d1616c4fc403d8c764eaed5426b3c75ba01d240983455a493456a9",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/line-z1sxs0U8.js": {
+      "bytes": 949,
+      "sha256": "d5c5285ed6ec7a9d24af903768a0bbaa32b07af110ccef1f0d72d492fa4168f3",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/path-Cxm7uVC7.js": {
+      "bytes": 2070,
+      "sha256": "4d9423bc1eaaa9c327c8c2d97c1500b73905276de27029cb5f3a1b5b2c301c74",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-426QAEUC-CgWX8DKL.js": {
+      "bytes": 274,
+      "sha256": "7b74ef8e610c83bdfdff9bfb13871d9d69cdedb8874319c8e238e81c3a2d951e",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-ENJZ2VHE-iER9z-cF.js": {
+      "bytes": 33511,
+      "sha256": "d3fe9316b6f1a16a7575411227159b34c3e8ed45c8b46a3e399e2ddb93c39ee3",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/rough.esm-BiYCatd7.js": {
+      "bytes": 27103,
+      "sha256": "447fb203355631984196c1886d546c179beeb235230efefbe667080aab58d5e2",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-BSJP7CBP-CXC6kCEx.js": {
+      "bytes": 2094,
+      "sha256": "deb97ec2c01add1e6f8e7102374b6637c785ef11dc3f5fcf174a8305057e2665",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-336JU56O-jCJn5wsW.js": {
+      "bytes": 3628,
+      "sha256": "0e640b2e64577e2d85051aa94d705967577f46afe745c97a930d7bcc98256c61",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chunk-XPW4576I-CsWxC0_l.js": {
+      "bytes": 41856,
+      "sha256": "0ec5df5023174a093e5720c3ac794c8392a1898539ee99c1b6edf4f756584eae",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/logger-BVohFQ23.js": {
+      "bytes": 1013,
+      "sha256": "0b659c4ccd34b716d67fc898be28dfe036c83820a31143db875a8f0e752ee59c",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/src-DHgFesxz.js": {
+      "bytes": 273749,
+      "sha256": "d9a61fb20ec31e9d201b23432c325186d1fc8a6b9ac1608ab2dcf6099203ea01",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/imeComposition-DqvuWWJP.js": {
+      "bytes": 11035,
+      "sha256": "6366696567ed643be1c1ee68683964d6835519fc466da5ef24c9f15396fcb477",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/chevron-left-C-R-OEcc.js": {
+      "bytes": 146,
+      "sha256": "0a65dbb898fe5c9f7b7a9c198c71d519b9c4141f93ff36cd82ceb5fa4c015c45",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/keyboardShortcuts-B8FrfU2R.js": {
+      "bytes": 1644,
+      "sha256": "e8345fc812df34fbe5ab7749b17fd46297cfb09d764203f0bdc5bb3e01818dbe",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/IntlProvider-BDZANi-i.js": {
+      "bytes": 660390,
+      "sha256": "b1a6fd94f9e52b89b3a398b5bf9ee1776b0566a65d43e680ad12ec7dc086e76c",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/folder-open-BzEqQ08P.js": {
+      "bytes": 308,
+      "sha256": "8a547061c619a01c5fc20dc5cfa59d610ba5928361b81c021f7f0e1ebb7de291",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/catalogTree-P8S5ypDb.js": {
+      "bytes": 653728,
+      "sha256": "85a258ed01038ff80ea263552be89ae0a47ef6865bd11b38582ecd1f53c091a6",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/esm-CdLAonLj.js": {
+      "bytes": 16954,
+      "sha256": "80ca93dbd7d2dfa0f2832208e3f35e800a05999c58b3191f3a1baa6cdbda6467",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/list-tree-C9mHavkQ.js": {
+      "bytes": 312,
+      "sha256": "30f826183d104b32976d0f99dadf5c1f1bec51b22c6298e9f883d75321da3e78",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/mouse-pointer-2-BEdWqVM9.js": {
+      "bytes": 267,
+      "sha256": "0a0809d4b49f25b2efd686b77c6778e733eb18d8a9dee00a6b9edfb8e57c6da7",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/notebook-text-BoMAElw1.js": {
+      "bytes": 428,
+      "sha256": "5d8b94a0fa046bcf58f0a4c175b632106df51da94e5f8c269f5a577f5e80aece",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/panel-left-close-DG-hflLu.js": {
+      "bytes": 252,
+      "sha256": "3ed23a36cda1f4567bd1d995bd76f3af25c62f7e28816be87f62088e3b02de42",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/panel-left-open-BskpjshO.js": {
+      "bytes": 250,
+      "sha256": "457787b65c768bcca7bc7ef0fba20e64f3bf0810d884609fdc76f087cf6f2766",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/sparkles-Cjb2nnuP.js": {
+      "bytes": 510,
+      "sha256": "88038192e13674e57e3c2a319b711301d65d30af04e86355f9f404c4e5c204d1",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/zoom-in-OQPTtqHH.js": {
+      "bytes": 318,
+      "sha256": "116758e8ed60a2c4d590ff31fcaa5aa16a32ce3b958443604c3ef26d16d969e9",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/zoom-out-VYhIBMzN.js": {
+      "bytes": 264,
+      "sha256": "312a8da0a58a48fa51527a6d4170fe6e0c2163543d74482168b3e010d6d98653",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/usageStatsUiParts-_hjTC0l-.js": {
+      "bytes": 3023,
+      "sha256": "6d03bc52d8f7b855f89d07162d88cfb8581a2afc034aa9771b01222700a9bfbe",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/officeFilePreview-BPR8vWzZ.js": {
+      "bytes": 2126,
+      "sha256": "0d9740d75381c2bcf3bf84b5b69512a94d644c69443b26aed68f29a1d14b83e7",
+      "contentType": "application/javascript"
+    },
+    "/remote/v4/assets/index-BMndL2ru.css": {
+      "bytes": 384056,
+      "sha256": "29d6860395ecc0f6b2606b6b5359dbccb0423ac584ac206d83068d107eba5e94",
+      "contentType": "text/css"
+    }
+  }
+}

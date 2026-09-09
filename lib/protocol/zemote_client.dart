@@ -1,7 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
-
 import 'channel_client.dart';
 import 'connection_params.dart';
 import 'conversation.dart';
@@ -9,6 +7,7 @@ import 'device_info.dart';
 import 'id.dart';
 import 'relay_client.dart';
 import 'rpc_transport.dart';
+import 'observable.dart';
 
 String _reqId(String prefix) => generateRequestId(prefix);
 
@@ -17,22 +16,23 @@ String _reqId(String prefix) => generateRequestId(prefix);
 class ZemoteClient {
   final ZemoteConnectionParams params;
   final void Function(String line)? onLog;
+  final Duration recoveryRetryDelay;
 
   late final RelayClient relay;
-  final _pendingMatchers =
-      <String, bool Function(Map<String, dynamic>)>{};
-  final _pendingCompleters =
-      <String, Completer<Map<String, dynamic>>>{};
+  final _pendingMatchers = <String, bool Function(Map<String, dynamic>)>{};
+  final _pendingCompleters = <String, Completer<Map<String, dynamic>>>{};
 
   StreamSubscription? _payloadSub;
 
-  final _workspaceListUpdatedController =
-      StreamController<dynamic>.broadcast();
+  final _workspaceListUpdatedController = StreamController<dynamic>.broadcast();
   Stream<dynamic> get workspaceListUpdated =>
       _workspaceListUpdatedController.stream;
 
-  ZemoteClient(this.params, {this.onLog}) {
-    relay = RelayClient(params, onLog: onLog);
+  ZemoteClient(this.params,
+      {this.onLog,
+      RelayClient? relayClient,
+      this.recoveryRetryDelay = const Duration(seconds: 3)}) {
+    relay = relayClient ?? RelayClient(params, onLog: onLog);
     _payloadSub = relay.payloads.listen(_dispatchPayload);
     relay.stateListenable.addListener(_onRelayState);
   }
@@ -68,6 +68,7 @@ class ZemoteClient {
   Future<void> _recoverActiveBridges() async {
     _log('[bridge] recovering ${_activeBridges.length} bridge(s)');
     for (final session in List<BridgeSession>.from(_activeBridges)) {
+      if (session.degraded.value == null) continue;
       if (_recoveringBridges.contains(session)) continue;
       _recoveringBridges.add(session);
       unawaited(_recoverBridgeWithRetry(session));
@@ -80,13 +81,14 @@ class ZemoteClient {
   /// strands commands ("can't send after reconnect"). A relay re-drop during
   /// the retries just prolongs the loop.
   Future<void> _recoverBridgeWithRetry(BridgeSession session) async {
+    final recoveryId = _reqId('recovery');
     try {
-      for (var attempt = 1; attempt <= 15; attempt++) {
+      for (var attempt = 1; !session._disposed; attempt++) {
         if (session._disposed) return;
-        if (await _recoverBridgeOnce(session)) return;
+        if (await _recoverBridgeOnce(session, recoveryId)) return;
         if (session._disposed) return;
         _log('[bridge] recovery attempt $attempt failed, retrying');
-        await Future.delayed(const Duration(seconds: 3));
+        await Future.delayed(recoveryRetryDelay);
       }
     } finally {
       _recoveringBridges.remove(session);
@@ -94,7 +96,8 @@ class ZemoteClient {
   }
 
   /// Returns true when the bridge is healthy again.
-  Future<bool> _recoverBridgeOnce(BridgeSession session) async {
+  Future<bool> _recoverBridgeOnce(
+      BridgeSession session, String recoveryId) async {
     final workspaceKey = session.bridge['workspaceKey'] as String?;
     if (workspaceKey == null) {
       // Nothing to reconnect; clear the degraded flag so commands unblock.
@@ -102,27 +105,18 @@ class ZemoteClient {
       return true;
     }
     session.degraded.value = 'recovering';
-    // 1) cheap path: workspace-reconnect-request
+    // Official Z4t T -> C -> P always opens a fresh bridge after a transport
+    // failure. workspace-reconnect-request reconnects a workspace backend; it
+    // does not recreate the channel transport or its subscriptions.
     try {
-      final res = await reconnectWorkspace(workspaceKey)
-          .timeout(const Duration(seconds: 15));
-      if (res['success'] == true) {
-        _log('[bridge] reconnected $workspaceKey');
-        session.degraded.value = null;
-        session.recovered.value += 1;
-        return true;
-      }
-    } catch (e) {
-      _log('[bridge] reconnect-request failed: $e');
-    }
-    // 2) full reopen: new workspace-bridge-open, swap the transport stack
-    // into the SAME BridgeSession so open pages keep working.
-    try {
-      await _reopenBridge(session, workspaceKey);
-      session.degraded.value = null;
+      await _reopenBridge(session, workspaceKey, recoveryId);
+      await session.channels.ready.timeout(const Duration(seconds: 30));
+      if (session._disposed) return false;
       session.recovered.value += 1;
+      session.degraded.value = null;
       return true;
     } catch (e) {
+      if (session._disposed) return false;
       _log('[bridge] reopen failed: $e');
       session.degraded.value = 'reopen-failed: $e';
       return false;
@@ -159,7 +153,11 @@ class ZemoteClient {
       _workspaceListUpdatedController.add(payload['result']);
       return;
     }
-    if (type == 'bridge-degraded') {
+    if (type == 'bridge-degraded' ||
+        type == 'workspace-bridge-error' &&
+            _activeBridges.any((session) =>
+                session.bridge['bridgeSessionId'] ==
+                payload['bridgeSessionId'])) {
       _handleBridgeDegraded(payload);
       return;
     }
@@ -171,7 +169,7 @@ class ZemoteClient {
       final router = id == null ? null : _frameRouters[id];
       if (router != null) {
         router(payload);
-      } else if (id != null) {
+      } else if (id != null && !_retiredBridgeIds.contains(id)) {
         (_pendingBridgePayloads[id] ??= []).add(payload);
       }
       return;
@@ -182,9 +180,7 @@ class ZemoteClient {
     final done = <String>[];
     _pendingMatchers.forEach((requestId, matcher) {
       final completer = _pendingCompleters[requestId];
-      if (completer != null &&
-          !completer.isCompleted &&
-          matcher(payload)) {
+      if (completer != null && !completer.isCompleted && matcher(payload)) {
         done.add(requestId);
         completer.complete(payload);
       }
@@ -218,8 +214,7 @@ class ZemoteClient {
     final id = _reqId('bootstrap');
     final res = await request(
       {'zcode_type': 'bootstrap-request', 'requestId': id},
-      (p) =>
-          p['zcode_type'] == 'bootstrap-response' && p['requestId'] == id,
+      (p) => p['zcode_type'] == 'bootstrap-response' && p['requestId'] == id,
     );
     return (res['result'] as Map?)?.cast<String, dynamic>() ?? res;
   }
@@ -230,18 +225,16 @@ class ZemoteClient {
     final res = await request(
       {'zcode_type': 'workspace-list-request', 'requestId': id},
       (p) =>
-          p['zcode_type'] == 'workspace-list-response' &&
-          p['requestId'] == id,
+          p['zcode_type'] == 'workspace-list-response' && p['requestId'] == id,
     );
     return res['result'];
   }
 
   int _bridgeGeneration = 0;
   final _activeBridges = <BridgeSession>[];
-  final _frameRouters =
-      <String, void Function(Map<String, dynamic>)>{};
-  final _pendingBridgePayloads =
-      <String, List<Map<String, dynamic>>>{};
+  final _frameRouters = <String, void Function(Map<String, dynamic>)>{};
+  final _pendingBridgePayloads = <String, List<Map<String, dynamic>>>{};
+  final _retiredBridgeIds = <String>{};
 
   /// bridge-degraded (e.g. `rpc-transport-fault`): the desktop stopped the
   /// bridge transport. Mark it degraded and kick off the retrying recovery
@@ -316,6 +309,7 @@ class ZemoteClient {
     String requestedBridgeSessionId,
     Map<String, dynamic> bridge,
   ) {
+    final oldId = session._bridge['bridgeSessionId'];
     session._transport.dispose();
     final transport = RpcFrameTransport(
       bridgeSessionId:
@@ -337,8 +331,12 @@ class ZemoteClient {
     // Register at the single dispatch point and flush any frames that
     // arrived before the transport existed (Initialize race).
     final id = transport.bridgeSessionId;
-    final oldId = session._bridge['bridgeSessionId'];
-    if (oldId != id) _frameRouters.remove(oldId);
+    if (oldId is String && oldId != id) {
+      _frameRouters.remove(oldId);
+      _pendingBridgePayloads.remove(oldId);
+      _retiredBridgeIds.add(oldId);
+    }
+    _retiredBridgeIds.remove(id);
     _frameRouters[id] = transport.acceptPayload;
     final pending = _pendingBridgePayloads.remove(id);
     if (pending != null) {
@@ -352,8 +350,7 @@ class ZemoteClient {
   /// bridgeSessionId, bumped generation, carries recoveryId), then swaps
   /// the stack into the existing [BridgeSession].
   Future<void> _reopenBridge(
-      BridgeSession session, String workspaceKey) async {
-    final oldBridge = session.bridge;
+      BridgeSession session, String workspaceKey, String recoveryId) async {
     final bridgeSessionId = _reqId('bridge');
     final generation = ++_bridgeGeneration;
     final requestId = _reqId('workspace-bridge');
@@ -364,9 +361,9 @@ class ZemoteClient {
         'requestId': requestId,
         'bridgeSessionId': bridgeSessionId,
         'bridgeGeneration': generation,
-        if (oldBridge['recoveryId'] != null)
-          'recoveryId': oldBridge['recoveryId'],
+        'recoveryId': recoveryId,
         'workspaceKey': workspaceKey,
+        if (session.initialTaskId != null) 'taskId': session.initialTaskId,
       },
       (p) =>
           (p['zcode_type'] == 'workspace-bridge-ready' ||
@@ -376,6 +373,7 @@ class ZemoteClient {
     if (res['zcode_type'] == 'workspace-bridge-error') {
       throw StateError('workspace-bridge-error: ${res['error'] ?? res}');
     }
+    if (session._disposed) throw StateError('bridge disposed during recovery');
     final bridge =
         (res['bridge'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
     _attachStack(session, bridgeSessionId, bridge);
@@ -426,6 +424,8 @@ class ZemoteClient {
     for (final s in List<BridgeSession>.from(_activeBridges)) {
       s.dispose();
     }
+    _pendingBridgePayloads.clear();
+    _retiredBridgeIds.clear();
     await relay.dispose();
     await _workspaceListUpdatedController.close();
   }
@@ -437,20 +437,23 @@ class BridgeSession {
   ChannelClient _channels;
   final void Function(BridgeSession) _onDispose;
   bool _disposed = false;
+  final _healthWaiters = <Completer<void>>{};
 
   /// Non-null while the bridge is degraded (rpc-transport-fault etc.).
-  final ValueNotifier<String?> degraded = ValueNotifier(null);
+  final ValueSignal<String?> degraded = ValueSignal(null);
 
   /// Bumped when the bridge recovers/reopens — subscriptions must
   /// resubscribe (server-side subscription state died with the old bridge).
-  final ValueNotifier<int> recovered = ValueNotifier(0);
+  final ValueSignal<int> recovered = ValueSignal(0);
 
   /// Resolves once the bridge is healthy again (degraded cleared), or throws
   /// [TimeoutException]. Commands gate on this so a send during a
   /// reconnect/recovery window doesn't hang on a dead bridge.
   Future<void> waitHealthy({Duration timeout = const Duration(seconds: 45)}) {
-    if (_disposed || degraded.value == null) return Future.value();
+    if (_disposed) return Future.error(StateError('bridge disposed'));
+    if (degraded.value == null) return Future.value();
     final completer = Completer<void>();
+    _healthWaiters.add(completer);
     void check() {
       if (degraded.value == null && !completer.isCompleted) {
         completer.complete();
@@ -462,7 +465,10 @@ class BridgeSession {
     return completer.future.timeout(timeout, onTimeout: () {
       degraded.removeListener(check);
       throw TimeoutException('bridge 恢复超时: ${degraded.value}');
-    }).whenComplete(() => degraded.removeListener(check));
+    }).whenComplete(() {
+      degraded.removeListener(check);
+      _healthWaiters.remove(completer);
+    });
   }
 
   BridgeSession._({
@@ -473,8 +479,7 @@ class BridgeSession {
         _channels = ChannelClient(sendBody: (_) {}),
         _onDispose = onDispose;
 
-  static RpcFrameTransport _placeholderTransport(
-          Map<String, dynamic> bridge) =>
+  static RpcFrameTransport _placeholderTransport(Map<String, dynamic> bridge) =>
       RpcFrameTransport(
         bridgeSessionId: '${bridge['bridgeSessionId'] ?? ''}',
         sendPayload: (_) {},
@@ -520,6 +525,12 @@ class BridgeSession {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    for (final waiter in _healthWaiters) {
+      if (!waiter.isCompleted) {
+        waiter.completeError(StateError('bridge disposed'));
+      }
+    }
+    _healthWaiters.clear();
     degraded.dispose();
     recovered.dispose();
     _transport.dispose();

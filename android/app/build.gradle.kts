@@ -20,8 +20,12 @@ fun propOrEnv(name: String): String? =
 
 android {
     namespace = "com.zcoderemote.zcode_remote"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    compileSdk = 36
+    buildFeatures {
+        resValues = true
+    }
+    // No native C/C++ code in this project, so no NDK is required; leaving the
+    // line out avoids AGP auto-downloading an unlicensed NDK on clean machines.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -30,6 +34,7 @@ android {
 
     defaultConfig {
         applicationId = "com.zcoderemote.zcode_remote"
+        resValue("string", "app_name", "ZcodeRemote")
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
@@ -51,6 +56,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            val qa = System.getenv("ZCODE_ANDROID_QA") == "true"
+            applicationIdSuffix = if (qa) ".qa" else ".dev"
+            resValue("string", "app_name", if (qa) "ZcodeRemote QA" else "ZcodeRemote Dev")
+        }
         release {
             val releaseSigning = signingConfigs.findByName("release")
             if (releaseSigning != null && releaseSigning.storeFile != null) {
@@ -72,4 +82,9 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Compatible with SDK 36; newer core lines may require SDK 37.
+    implementation("androidx.core:core:1.18.0")
 }

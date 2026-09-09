@@ -603,6 +603,7 @@ tooltip「选择模型」；思考 chip 竖条改全高动画，tooltip 按官�
 - **rowsRange**：请求 `{sessionId, beforeRowId?, limit(min1,max=rowsRangeMaxLimit)}`，
   响应 `{rows:[...], atSeq, atLogEpoch, hasMore}`；官方 loadOlder 默认 limit=
   snapshotTailWindowRows，loadAllOlder 循环 limit=rowsRangeMaxLimit 到 hasMore=false。
+  当前固定基线数值为 60 / 200。`wb` 比较当前最旧 rowId 与全局 firstRowId，`LTe.loadOlder` 同时校验返回 logEpoch 与未变化的游标，`Tb` 过滤掉当前头部及其后的行。
 - **工具族图标**（lucide，全部已入库 official_icons.dart）：brain/terminal/search/
   earth/globe/file-diff/list-todo/bot/git-branch + composer 触发器 sliders-horizontal/
   package + 操作行 copy/thumbs-up/thumbs-down + plus 菜单 paperclip/ellipsis。

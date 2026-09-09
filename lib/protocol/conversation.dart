@@ -3,11 +3,11 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
 
 import 'channel_client.dart';
 import 'id.dart';
 import 'zemote_client.dart';
+import 'observable.dart';
 
 /// Conversation V4 protocol over the `zcode-agent` channel.
 const conversationProtocolAppVersion = '3.6.5';
@@ -34,6 +34,7 @@ class ConversationTransport {
   final String clientId = generateUuid();
   bool _handshaken = false;
   Future<void>? _handshakeFuture;
+  int _handshakeGeneration = 0;
 
   /// From the server hello — required for attachment uploads.
   String? connectionId;
@@ -53,10 +54,12 @@ class ConversationTransport {
   }
 
   void _onBridgeRecovered() {
+    _handshakeGeneration++;
     _handshaken = false;
     _handshakeFuture = null;
     connectionId = null;
     _prep = null;
+    _prepGeneration++;
   }
 
   ChannelClient get _channels => session.channels;
@@ -65,13 +68,22 @@ class ConversationTransport {
 
   Future<void> handshake() {
     if (_handshaken) return Future.value();
-    return _handshakeFuture ??= () async {
-      final hello = await _channels.call(channel, 'helloConversationV4', []);
-      _log('[v4] hello: $hello');
-      if (hello is Map) {
-        connectionId = hello['connectionId'] as String?;
+    final pending = _handshakeFuture;
+    if (pending != null) return pending;
+    final generation = _handshakeGeneration;
+    final channels = _channels;
+    void checkCurrent() {
+      if (generation != _handshakeGeneration ||
+          !identical(channels, _channels)) {
+        throw StateError('conversation handshake superseded');
       }
-      await _channels.call(channel, 'initializeConversationV4', [
+    }
+
+    late final Future<void> operation;
+    operation = () async {
+      final hello = await channels.call(channel, 'helloConversationV4', []);
+      checkCurrent();
+      await channels.call(channel, 'initializeConversationV4', [
         {
           'kind': 'clientHello',
           'protocolVersion': 3,
@@ -80,12 +92,16 @@ class ConversationTransport {
           'appVersion': appVersion,
         },
       ]);
+      checkCurrent();
+      connectionId = hello is Map ? hello['connectionId'] as String? : null;
       _handshaken = true;
+      _log('[v4] handshake ready');
     }()
-        .catchError((e) {
-      _handshakeFuture = null;
-      throw e;
+        .whenComplete(() {
+      if (identical(_handshakeFuture, operation)) _handshakeFuture = null;
     });
+    _handshakeFuture = operation;
+    return operation;
   }
 
   Future<ConversationSubscription> subscribe(String sessionId) async {
@@ -148,11 +164,11 @@ class ConversationTransport {
     Map<String, dynamic> payload, {
     Duration timeout = const Duration(seconds: 30),
   }) async {
-    await handshake();
     // Gate on a healthy bridge: during a relay drop/recovery the old bridge
     // is dead and requests would otherwise hang until timeout. Once the
     // bridge recovers, the send goes through on the fresh transport.
     await session.waitHealthy(timeout: const Duration(seconds: 45));
+    await handshake();
     final sub = sessionId == null ? null : _subscriptions[sessionId];
     final baseRevision = sessionId == null
         ? null
@@ -211,7 +227,7 @@ class ConversationTransport {
   }
 
   /// Sends one command envelope; on timeout (likely a relay drop mid-flight)
-  /// waits for bridge recovery and retries once with a fresh commandId.
+  /// waits for bridge recovery and replays the SAME id for deduplication.
   Future<dynamic> _sendCommandWithRetry(
       Map<String, dynamic> envelope, Duration timeout) async {
     try {
@@ -223,23 +239,19 @@ class ConversationTransport {
           ],
           timeout: timeout);
     } on TimeoutException {
-      // Retry only when the relay dropped mid-flight (bridge degraded): the
-      // command then never reached the server. If the bridge is still
+      // A drop does not prove the command was never accepted. Preserve its
+      // identity when replaying. If the bridge is still
       // healthy, rethrow — a retry would double-deliver (e.g. sendText).
       if (session.degraded.value == null) rethrow;
       _log('[v4] command timed out during drop, waiting for recovery and '
           'retrying');
       await session.waitHealthy(timeout: const Duration(seconds: 45));
-      final fresh = {
-        ...envelope,
-        'commandId': generateUuid(),
-        'issuedAt': DateTime.now().millisecondsSinceEpoch,
-      };
+      await handshake();
       return _channels.call(
           channel,
           'sendConversationCommandV4',
           [
-            {...scope, 'envelope': fresh},
+            {...scope, 'envelope': envelope},
           ],
           timeout: timeout);
     }
@@ -277,7 +289,7 @@ class ConversationTransport {
     );
     final map = res is Map ? res.cast<String, dynamic>() : null;
     final status = map?['status'];
-    if (status != 'accepted') {
+    if (status != 'accepted' && status != 'duplicate') {
       throw StateError(
           'createSession rejected: ${map?['reasonCode'] ?? status} ${map?['message'] ?? ''}');
     }
@@ -369,40 +381,31 @@ class ConversationTransport {
   Future<dynamic> resumeGoal(String sessionId) =>
       sendCommand(sessionId, 'resumeGoal', {});
 
-  Future<dynamic> stop(String sessionId) => sendCommand(sessionId, 'stop', {});
+  Future<dynamic> stop(String sessionId,
+          {String? expectedForegroundExecutionId}) =>
+      sendCommand(sessionId, 'stop', {
+        if (expectedForegroundExecutionId != null)
+          'expectedForegroundExecutionId': expectedForegroundExecutionId,
+      });
 
   Future<dynamic> compact(String sessionId) =>
       sendCommand(sessionId, 'compact', {});
 
   /// Switch model config. All of provider/model/thought are required by the
   /// protocol schema — pass current values for the ones not changing.
-  /// Thought levels differ per model family (GLM-5.2: max/high/nothink;
-  /// Turbo: enabled/off), so on `Unsupported reasoning effort` we retry
-  /// with the other family's default.
+  /// The caller resolves thought levels from advertised model metadata.
+  /// A rejection must never trigger a guessed configuration write.
   Future<dynamic> switchModelConfig(
     String sessionId, {
     required String provider,
     required String model,
     required String thought,
-  }) async {
-    var res = await sendCommand(sessionId, 'switchModelConfig', {
-      'provider': provider,
-      'model': model,
-      'thought': thought,
-    });
-    final message = res is Map ? '${res['message'] ?? ''}' : '';
-    if (message.contains('Unsupported reasoning effort')) {
-      final fallback =
-          (thought == 'enabled' || thought == 'off') ? 'max' : 'enabled';
-      _log('[v4] switchModelConfig retry with thought=$fallback');
-      res = await sendCommand(sessionId, 'switchModelConfig', {
+  }) =>
+      sendCommand(sessionId, 'switchModelConfig', {
         'provider': provider,
         'model': model,
-        'thought': fallback,
+        'thought': thought,
       });
-    }
-    return res;
-  }
 
   /// build / edit / plan / yolo. Mirrors `switchCollaborationMode`.
   Future<dynamic> switchCollaborationMode(String sessionId, String mode) =>
@@ -513,15 +516,19 @@ class ConversationTransport {
     required String mime,
     required Uint8List bytes,
     void Function(double progress)? onProgress,
+    bool Function()? isCancelled,
   }) async {
-    await handshake();
-    final connId = connectionId;
-    if (connId == null) {
-      throw StateError('attachmentPut: missing connectionId');
+    if (bytes.length > 20 * 1024 * 1024) {
+      throw StateError('proto.payloadTooLarge');
     }
+    void checkCancelled() {
+      if (isCancelled?.call() == true) throw StateError('attachment.cancelled');
+    }
+
+    checkCancelled();
+    await handshake();
     final uploadId = 'upload-${generateUuid()}';
     final base = {
-      'connectionId': connId,
       'uploadId': uploadId,
       'sessionId': sessionId,
     };
@@ -529,61 +536,90 @@ class ConversationTransport {
         (bytes.length + _attachmentChunkBytes - 1) ~/ _attachmentChunkBytes;
     final checksum = 'sha256:${sha256.convert(bytes).toString()}';
 
-    final beginRes = await _channels.call(channel, 'attachmentBeginV4', [
-      {
-        ...scope,
-        ...base,
-        'fileName': fileName,
-        'mime': mime,
-        'totalBytes': bytes.length,
-        'totalChunks': totalChunks,
-        'checksum': checksum,
-      },
-    ]);
-    if (beginRes is Map && beginRes['state'] == 'committed') {
+    var begun = false;
+    var committed = false;
+    try {
+      checkCancelled();
+      final beginRes = await _channels.call(channel, 'attachmentBeginV4', [
+        {
+          ...scope,
+          ...base,
+          'fileName': fileName,
+          'mime': mime,
+          'totalBytes': bytes.length,
+          'totalChunks': totalChunks,
+          'checksum': checksum,
+        },
+      ]);
+      begun = true;
+      if (beginRes is Map && beginRes['state'] == 'committed') {
+        if (beginRes['ref'] is! String || (beginRes['ref'] as String).isEmpty) {
+          throw StateError('attachment.missingRef');
+        }
+        committed = true;
+        onProgress?.call(1);
+        return {
+          'ref': beginRes['ref'],
+          'fileName': fileName,
+          'mime': mime,
+          'bytes': bytes.length,
+        };
+      }
+      var nextChunk = beginRes is Map
+          ? (beginRes['nextChunkIndex'] as num?)?.toInt() ?? 0
+          : 0;
+      if (nextChunk < 0 || nextChunk > totalChunks) {
+        throw StateError('fault.attachment.invalidServerProgress');
+      }
+      for (var n = nextChunk; n < totalChunks; n++) {
+        checkCancelled();
+        final start = n * _attachmentChunkBytes;
+        final end = start + _attachmentChunkBytes > bytes.length
+            ? bytes.length
+            : start + _attachmentChunkBytes;
+        final chunkRes = await _channels.call(channel, 'attachmentChunkV4', [
+          {
+            ...scope,
+            ...base,
+            'chunkIndex': n,
+            'dataBase64':
+                base64.encode(Uint8List.sublistView(bytes, start, end)),
+          },
+        ]);
+        nextChunk = chunkRes is Map
+            ? (chunkRes['nextChunkIndex'] as num?)?.toInt() ?? n + 1
+            : n + 1;
+        if (nextChunk != n + 1) {
+          throw StateError('fault.attachment.invalidServerProgress');
+        }
+        onProgress?.call((nextChunk / totalChunks) * .99);
+      }
+      checkCancelled();
+      final commitRes = await _channels.call(channel, 'attachmentCommitV4', [
+        {...scope, ...base},
+      ]);
+      final ref = commitRes is Map ? commitRes['ref'] : null;
+      if (ref is! String || ref.isEmpty) {
+        throw StateError('attachment.missingRef');
+      }
+      committed = true;
       onProgress?.call(1);
       return {
-        'ref': beginRes['ref'],
+        'ref': ref,
         'fileName': fileName,
         'mime': mime,
         'bytes': bytes.length,
       };
-    }
-    var nextChunk = beginRes is Map
-        ? (beginRes['nextChunkIndex'] as num?)?.toInt() ?? 0
-        : 0;
-    for (var n = nextChunk; n < totalChunks; n++) {
-      final start = n * _attachmentChunkBytes;
-      final end = start + _attachmentChunkBytes > bytes.length
-          ? bytes.length
-          : start + _attachmentChunkBytes;
-      final chunkRes = await _channels.call(channel, 'attachmentChunkV4', [
-        {
-          ...scope,
-          ...base,
-          'chunkIndex': n,
-          'dataBase64': base64.encode(Uint8List.sublistView(bytes, start, end)),
-        },
-      ]);
-      nextChunk = chunkRes is Map
-          ? (chunkRes['nextChunkIndex'] as num?)?.toInt() ?? n + 1
-          : n + 1;
-      if (nextChunk != n + 1) {
-        throw StateError('fault.attachment.invalidServerProgress');
+    } catch (_) {
+      if (begun && !committed) {
+        try {
+          await _channels.call(channel, 'attachmentAbortV4', [
+            {...scope, ...base}
+          ]);
+        } catch (_) {/* Best effort, as TTe. */}
       }
-      onProgress?.call(nextChunk / totalChunks);
+      rethrow;
     }
-    onProgress?.call(1);
-    final commitRes = await _channels.call(channel, 'attachmentCommitV4', [
-      {...scope, ...base},
-    ]);
-    final ref = commitRes is Map ? commitRes['ref'] : null;
-    return {
-      'ref': ref,
-      'fileName': fileName,
-      'mime': mime,
-      'bytes': bytes.length,
-    };
   }
 
   /// Reads an attachment (for previews). Returns `{bytes, mediaType}`.
@@ -673,20 +709,180 @@ class ConversationTransport {
 
   // ---------------------------------------------------- workspace config
 
+  Future<List<Map<String, dynamic>>> workspaceFiles() async {
+    final root = scope['workspacePath'];
+    if (root is! String || root.isEmpty) return const [];
+    final result = await _channels.call(
+        Channels.file,
+        'listWorkspaceFiles',
+        [
+          {'rootPath': root}
+        ],
+        timeout: const Duration(seconds: 20));
+    return result is List
+        ? result.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList()
+        : const [];
+  }
+
+  Future<List<Map<String, dynamic>>> skillReferences(String? sessionId) async {
+    final result = await _channels.call(
+        Channels.zcodeAgent,
+        'getSkillReferenceCatalog',
+        [
+          {...scope, if (sessionId != null) 'sessionId': sessionId}
+        ],
+        timeout: const Duration(seconds: 20));
+    final rows = result is Map ? result['skills'] : null;
+    return rows is List
+        ? rows.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList()
+        : const [];
+  }
+
+  Future<List<Map<String, dynamic>>> pluginReferences(String? sessionId) async {
+    final result = await _channels.call(
+        Channels.pluginManagement,
+        'getPluginReferenceCatalog',
+        [
+          {...scope, if (sessionId != null) 'sessionId': sessionId}
+        ],
+        timeout: const Duration(seconds: 20));
+    final rows = result is Map ? result['plugins'] : null;
+    return rows is List
+        ? rows.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList()
+        : const [];
+  }
+
+  Future<List<Map<String, dynamic>>> sessionReferences() async {
+    final result = await _channels.call(
+        Channels.zcodeTask, 'listTasks', [scope],
+        timeout: const Duration(seconds: 20));
+    return result is List
+        ? result.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList()
+        : const [];
+  }
+
+  /// Official yC/O2e: only retain the non-secret family selection fields.
+  Future<Map<String, dynamic>> providerFamilySelection() async {
+    final result = await _channels.call(Channels.setting, 'get', const [],
+        timeout: const Duration(seconds: 20));
+    if (result is! Map) {
+      throw const FormatException('missing provider settings');
+    }
+    return {
+      for (final key in [
+        'modelProviderFamilyModes',
+        'modelProviderFamilySelectedKeys'
+      ])
+        if (result[key] is Map)
+          key: Map<String, dynamic>.from(result[key] as Map),
+    };
+  }
+
+  /// Official ES/qke; no API-key fallback, and never silently select another
+  /// provider or team when the requested source is unavailable.
+  Future<dynamic> entitlementSnapshot(String providerId,
+          {String? organizationId, String? projectId}) =>
+      _channels.call(
+          Channels.usageStats,
+          'getEntitlementSnapshot',
+          [
+            {
+              'includeSubscription': true,
+              'preferredProviderId': providerId,
+              'requirePreferredProvider': true,
+              'allowDisabledPreferredProvider': true,
+              'allowEnvApiKey': false,
+              if (organizationId != null) 'organizationId': organizationId,
+              if (projectId != null) 'projectId': projectId,
+            }
+          ],
+          timeout: const Duration(seconds: 20));
+
+  /// Official lB uses authenticated enterprise pricing to discover the
+  /// selected team's concrete organization/project identities.
+  Future<dynamic> teamPlanProducts(String family) => _channels.call(
+      Channels.codingPlanSubscription,
+      'getEnterprisePricing',
+      [
+        {'authenticated': true, 'family': family}
+      ],
+      timeout: const Duration(seconds: 20));
+
+  /// Official rI scope. Reset RPCs have no workspace or conversation argument.
+  Future<dynamic> appUsageSnapshot(String range, String timeZone) =>
+      _channels.call(
+          Channels.usageStats,
+          'getAppUsageSnapshot',
+          [
+            {'range': range, 'timeZone': timeZone}
+          ],
+          timeout: const Duration(seconds: 20));
+
+  Future<dynamic> codingUsageSnapshot(
+          Map<String, dynamic> source, String range, String timeZone) =>
+      _channels.call(
+          Channels.usageStats,
+          'getCodingPlanUsageSnapshot',
+          [
+            {
+              ...source,
+              'range': range,
+              'customStartDate': null,
+              'customEndDate': null,
+              'timeZone': timeZone
+            }
+          ],
+          timeout: const Duration(seconds: 20));
+
+  Future<dynamic> planResetStatus(Map<String, dynamic> source) =>
+      _channels.call(Channels.usageStats, 'getCodingPlanResetStatus', [source],
+          timeout: const Duration(seconds: 20));
+
+  Future<dynamic> requestPlanResetOpportunity(
+          Map<String, dynamic> source, String idempotencyKey) =>
+      _channels.call(
+          Channels.usageStats,
+          'requestCodingPlanResetOpportunity',
+          [
+            {...source, 'idempotencyKey': idempotencyKey}
+          ],
+          timeout: const Duration(seconds: 20));
+
+  Future<dynamic> usePlanReset(Map<String, dynamic> source,
+          {required String resetType, required String idempotencyKey}) =>
+      _channels.call(
+          Channels.usageStats,
+          'useCodingPlanReset',
+          [
+            {
+              ...source,
+              'idempotencyKey': idempotencyKey,
+              'resetType': resetType
+            }
+          ],
+          timeout: const Duration(seconds: 20));
+
+  Future<dynamic> markPlanResetHistoryRead(Map<String, dynamic> source) =>
+      _channels.call(
+          Channels.usageStats, 'markCodingPlanResetHistoryRead', [source],
+          timeout: const Duration(seconds: 20));
+
   WorkspacePrep? _prep;
+  int _prepGeneration = 0;
 
   /// `zcode-task.prepareWorkspace` — returns configOptions (model/mode/
   /// thought selects) and slashCommands (builtin + custom skills/MCP).
   Future<WorkspacePrep> prepareWorkspace({bool refresh = false}) async {
     final cached = _prep;
     if (cached != null && !refresh) return cached;
+    final generation = ++_prepGeneration;
     final res = await _channels.call(
       Channels.zcodeTask,
       'prepareWorkspace',
       [scope],
     );
     final prep = WorkspacePrep._(res is Map ? res : const {});
-    _prep = prep;
+    if (generation == _prepGeneration) _prep = prep;
     return prep;
   }
 
@@ -747,13 +943,15 @@ List<Map<String, dynamic>> parseFileEntries(Object? res) {
     raw = raw['entries'] ?? raw['children'] ?? raw['files'];
   }
   if (raw is! List) return const [];
-  return [for (final item in raw.whereType<Map>()) item.cast<String, dynamic>()];
+  return [
+    for (final item in raw.whereType<Map>()) item.cast<String, dynamic>()
+  ];
 }
 
 /// Shared base for Conversation/SessionsIndex subscriptions.
 /// Extracts the common wire-frame staging, fragment reassembly, bridge
 /// recovery, and resubscribe retry logic.
-abstract class _SubscriptionBase<T extends ChangeNotifier> {
+abstract class _SubscriptionBase<T extends ProtocolNotifier> {
   final ConversationTransport _transport;
   final String _logTag;
 
@@ -1105,6 +1303,7 @@ class WorkspacePrep {
   final List<ConfigOption> configOptions;
   final List<SlashCommand> slashCommands;
   final Map raw;
+  factory WorkspacePrep.fromRaw(Map raw) => WorkspacePrep._(raw);
 
   WorkspacePrep._(this.raw)
       : configOptions = [
@@ -1177,13 +1376,21 @@ class ConfigOptionValue {
   /// label). The id drives first-party checks and menu pinning.
   final String? modelProviderId;
   final String? modelProviderName;
+  final String? origin;
+  final List<String>? modelThoughtLevels;
+  final String? modelDefaultThoughtLevel;
 
   ConfigOptionValue._(Map raw)
       : value = '${raw['value'] ?? ''}',
         name = '${raw['name'] ?? raw['value'] ?? ''}',
         description = raw['description'] as String?,
         modelProviderId = raw['modelProviderId'] as String?,
-        modelProviderName = raw['modelProviderName'] as String?;
+        modelProviderName = raw['modelProviderName'] as String?,
+        origin = raw['origin'] as String?,
+        modelThoughtLevels = raw['modelThoughtLevels'] is List
+            ? (raw['modelThoughtLevels'] as List).map((e) => '$e').toList()
+            : null,
+        modelDefaultThoughtLevel = raw['modelDefaultThoughtLevel'] as String?;
 
   /// Test/dev seam mirroring the wire shape, so UI tests can build option
   /// values without a live prepareWorkspace response.
@@ -1255,7 +1462,7 @@ class SessionEntry {
             (raw['pendingInteraction'] as Map?)?.cast<String, dynamic>();
 }
 
-class SessionsIndexState extends ChangeNotifier {
+class SessionsIndexState extends ProtocolNotifier {
   String? workspaceId;
   String? logEpoch;
   int seq = 0;
@@ -1357,9 +1564,11 @@ class SessionsIndexSubscription extends _SubscriptionBase<SessionsIndexState> {
   }
 }
 
-/// Conversation snapshot + row state, mirrors `fke()`/`pke()` delta
+enum HistoryPageResult { applied, stale, noProgress }
+
+/// Conversation snapshot + row state, mirrors the official delta
 /// application in the web client.
-class ConversationState extends ChangeNotifier {
+class ConversationState extends ProtocolNotifier {
   Map<String, dynamic>? snapshot;
   List<Map<String, dynamic>> rows = [];
   int seq = 0;
@@ -1399,6 +1608,11 @@ class ConversationState extends ChangeNotifier {
   }
 
   void _applySnapshot(Map<String, dynamic> snap, int toSeq) {
+    final sameEpoch = logEpoch == snap['logEpoch'];
+    if (!sameEpoch) {
+      rows = [];
+      historyExhausted = false;
+    }
     snapshot = snap;
     if (_pendingPatch != null) {
       snapshot = {...snap, ..._pendingPatch!};
@@ -1417,18 +1631,25 @@ class ConversationState extends ChangeNotifier {
         final head = windowRows.isEmpty
             ? null
             : (windowRows.first['rowId'] as num?)?.toInt();
+        final lowerBound = (rowsObj['firstRowId'] as num?)?.toInt();
         final older = head == null
             ? <Map<String, dynamic>>[]
             : rows.where((r) {
                 final id = (r['rowId'] as num?)?.toInt();
-                return id != null && id < head;
+                return id != null &&
+                    id < head &&
+                    (lowerBound == null || id >= lowerBound);
               }).toList();
         rows = [...older, ...windowRows];
       } else {
         rows = [];
       }
       totalCount = (rowsObj['totalCount'] as num?)?.toInt() ?? rows.length;
-      firstRowId = (rowsObj['firstRowId'] as num?)?.toInt();
+      final nextFirst = (rowsObj['firstRowId'] as num?)?.toInt();
+      if (nextFirst != null && firstRowId != null && nextFirst < firstRowId!) {
+        historyExhausted = false;
+      }
+      firstRowId = nextFirst;
     } else {
       rows = [];
       totalCount = 0;
@@ -1611,12 +1832,43 @@ class ConversationState extends ChangeNotifier {
 
   /// Older history exists beyond the current window.
   bool get canLoadOlder =>
-      !historyExhausted && firstRowId != null && totalCount > rows.length;
+      !historyExhausted &&
+      firstRowId != null &&
+      oldestRowId != null &&
+      oldestRowId! > firstRowId!;
 
   /// The cursor for `rowsRange` is the oldest row currently held, not the
   /// snapshot projection head (`firstRowId`).
   int? get oldestRowId =>
       rows.isEmpty ? firstRowId : (rows.first['rowId'] as num?)?.toInt();
+
+  /// Official LTe.loadOlder guards both the log epoch and the held cursor.
+  /// atSeq does not replace the live subscription's sequence.
+  HistoryPageResult applyHistoryPage(dynamic result,
+      {required int beforeRowId, required String? expectedLogEpoch}) {
+    if (logEpoch != expectedLogEpoch || oldestRowId != beforeRowId) {
+      return HistoryPageResult.stale;
+    }
+    if (result is! Map ||
+        result['rows'] is! List ||
+        result['hasMore'] is! bool) {
+      throw const FormatException('invalid history page');
+    }
+    if (result['atLogEpoch'] != logEpoch) return HistoryPageResult.stale;
+    final older = <int, Map<String, dynamic>>{};
+    for (final raw in result['rows'] as List) {
+      if (raw is! Map || raw['rowId'] is! num) {
+        throw const FormatException('invalid history row');
+      }
+      final id = (raw['rowId'] as num).toInt();
+      if (id < beforeRowId) older[id] = Map<String, dynamic>.from(raw);
+    }
+    if (older.isEmpty) return HistoryPageResult.noProgress;
+    final sorted = older.keys.toList()..sort();
+    historyExhausted = result['hasMore'] == false;
+    prependOlderRows([for (final id in sorted) older[id]!], null);
+    return HistoryPageResult.applied;
+  }
 
   /// Prepends older rows loaded via rowsRange (deduped by rowId).
   void prependOlderRows(List<Map<String, dynamic>> older, int? newFirstRowId) {
@@ -1626,8 +1878,7 @@ class ConversationState extends ChangeNotifier {
         .toList();
     if (fresh.isNotEmpty) {
       rows = [...fresh, ...rows];
-      final firstFresh = (fresh.first['rowId'] as num?)?.toInt();
-      firstRowId = newFirstRowId ?? firstFresh ?? firstRowId;
+      firstRowId = newFirstRowId ?? firstRowId;
       notifyListeners();
     } else if (newFirstRowId != null && newFirstRowId != firstRowId) {
       firstRowId = newFirstRowId;

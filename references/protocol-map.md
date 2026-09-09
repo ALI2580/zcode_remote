@@ -10,8 +10,9 @@ connection_params ─→ proof ─→ relay_client ─→ rpc_transport ─→ i
                               conversation (V4)
 ```
 
-只有 `zemote_client.dart` 和 `conversation.dart` 依赖 Flutter（`foundation.dart` 的
-ValueNotifier 等），其余全部是纯 Dart。
+协议目录全部使用纯 Dart；2026-09-09 已将 conversation、bridge、relay 的通知对象替换为
+`observable.dart`，平台识别使用条件导入的 `dart:io` / Web 兜底。UI 层仍由自己的
+ChangeNotifier / 页面监听持有业务状态。`dart run tooling/protocol_smoke.dart` 编译完整协议依赖图并验证投影。
 
 ## 与官方 Web 客户端的对应关系
 
@@ -41,7 +42,22 @@ ValueNotifier 等），其余全部是纯 Dart。
 - **Conversation V4**：快照 + 增量（delta）；`sessions-index` 订阅 + workspace-list
   推送双源合并；历史分页用已加载的最旧消息作游标。
 
+### 历史分页（2026-09-09 基线核查）
+
+- `index-nOVzQNKW.js` 的 `wb` 判断 `window[0].rowId > rows.firstRowId`，`firstRowId` 是全局下界，不能分页后改成当前页首行，也不能用 `totalCount > window.length` 替代。
+- `LTe.loadOlder` 请求 `rowsRange`，只在 `atLogEpoch == 当前 logEpoch` 且请求的最旧游标仍等于当前游标时合并；`Tb` 只保留 ID 小于当前头部的行，旧响应不能覆盖实时尾部。`atSeq` 不替换订阅序列。
+- `src-DHgFesxz.js` 的固定限制为普通尾部 60 行、最大范围 200 行。阅读恢复只循环到保存的消息，无进展或失败可显式重试，不进行无限空页循环。
+- `ConversationState.applyHistoryPage` 与 `ConversationHistory` 分别处理协议校验和页面生命周期。新日志清理旧页及耗尽标记；页面释放后的结果不写入其他作用域。
+
 ## 连接状态机与恢复
+
+### Coding Plan 重置与统计（2026-09-09）
+
+- `usage-stats.getCodingPlanResetStatus([{preferredProviderId, organizationId?, projectId?}])`，纯只读；返回 `availableFiveHourResets/availableWeekResets`（条目含 `expireAt`）、两类 `latest*ResetHistory.usedAt`、`hasUnreadHistory`。
+- `useCodingPlanReset` 在同一参数对象加入 `idempotencyKey` 与 `resetType:'FIVE_HOUR'|'WEEK'`。失败重试保留同一标识；已受理但后续状态未确认只查状态。手动成功以不同于请求前基线的服务端 `usedAt` 为证据。
+- `requestCodingPlanResetOpportunity` 在同一来源加入 `idempotencyKey`；5/10 分钟协调重试，瞬断沿用标识。`markCodingPlanResetHistoryRead` 使用同一来源。从 0.1.0+9 起，可见额度界面已接入 5 分钟共享轮询、前台恢复、外部完成、额度重查与已读去重；真实核查使用启动级 `quotaReadOnlyAudit`，仅阻止额度授予/消耗/已读，不是全应用只读沙箱。
+- `getCodingPlanUsageSnapshot` 使用 `range:'7d'|'30d'`、`customStartDate/customEndDate:null`、`preferredProviderId`、组织/项目和 IANA `timeZone`；`getAppUsageSnapshot` 使用独立的 `range/timeZone`。官方 `SJt` 套餐页面默认 7d；`Fqt/Mqt` 按来源、周期缓存 60 秒。
+- ROG 只读探针已确认三种读取 RPC 可用。应先校验当前来源的 entitlement，未连接的其他家族即使保留 familySelectedKeys，仍可能返回 `zai_coding_plan_api_key_required`，不能据此误判方法不存在。
 
 `RelayClient` 状态：`connecting → paired`，断开进入 `reconnecting` / `error`。
 心跳超时先探测（`poke()`）再重连。
@@ -50,14 +66,15 @@ ValueNotifier 等），其余全部是纯 Dart。
 
 1. relay 进入 `reconnecting/error` → 立即把所有活动 bridge 标记
    `degraded`（命令发送经 `waitHealthy()` 阻塞排队，而不是在死 socket 上超时）。
-2. relay 重新 `paired` → 对每个 bridge 走恢复流程，**重试 15 次 × 3s 直到成功**：
-   - 廉价路径：`workspace-reconnect-request`（15s 超时）；
-   - 失败则完整重开：新的 `workspace-bridge-open`（新 bridgeSessionId、generation +1、
-     携带旧 `recoveryId`），然后把新 transport/channels **换栈进同一个 BridgeSession**
-     （页面持有的引用不失效）。
+2. relay 重新 `paired` → 仅对 degraded bridge 恢复，失败每 3s 继续尝试直到成功或释放：
+   - 按官方 `Z4t T → C → P` 重新 `workspace-bridge-open`（新 bridgeSessionId、generation +1、
+     同一恢复周期的 recoveryId），把 transport/channels **换入同一个 BridgeSession**。
+   - 等待 Channel Initialize 后再宣布健康；不能把 `workspace-reconnect-request` 成功当作
+     旧 Channel 栈已经复活，该方法是重连工作区后端的独立入口。
 3. 恢复成功 → `session.recovered.value += 1`。所有订阅方监听该计数器重新订阅
    （服务端订阅状态随旧 bridge 一起死亡）。
-4. 桌面主动下发 `bridge-degraded`（如 `rpc-transport-fault`）→ 同样进恢复循环。
+4. 桌面主动下发 `bridge-degraded` 或针对活动桥接的 `workspace-bridge-error` → 同样进恢复循环；不重开其他健康工作区。
+5. 换栈前移除旧路由，旧桥的迟到帧直接丢弃。Conversation handshake 按代次和 Channel 实例校验；旧 hello/失败不得覆盖新 connectionId 或清掉新的进行中握手。
 
 ## 已知的竞态点（写新代码时要主动对齐）
 

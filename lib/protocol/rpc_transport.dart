@@ -77,8 +77,9 @@ class RpcFrameTransport {
     }
     for (var i = 0; i < fragmentCount; i++) {
       final start = i * _fragmentPayloadBytes;
-      final end =
-          start + _fragmentPayloadBytes > bytes.length ? bytes.length : start + _fragmentPayloadBytes;
+      final end = start + _fragmentPayloadBytes > bytes.length
+          ? bytes.length
+          : start + _fragmentPayloadBytes;
       final chunk = Uint8List.sublistView(bytes, start, end);
       _seq += 1;
       sendPayload({
@@ -98,9 +99,13 @@ class RpcFrameTransport {
   /// Feed a relay payload. Returns true if it was an rpc-frame(-ack).
   bool acceptPayload(Map<String, dynamic> payload) {
     final type = payload['zcode_type'];
+    if (type != 'rpc-frame' && type != 'rpc-frame-ack') return false;
+    if (payload['bridgeSessionId'] != bridgeSessionId ||
+        payload['bridgeGeneration'] != bridgeGeneration ||
+        payload['recoveryId'] != recoveryId) {
+      return false;
+    }
     if (type == 'rpc-frame-ack') return true;
-    if (type != 'rpc-frame') return false;
-    if (payload['bridgeSessionId'] != bridgeSessionId) return false;
 
     final messageSeq = (payload['messageSeq'] as num?)?.toInt();
     final fragmentIndex = (payload['fragmentIndex'] as num?)?.toInt();
@@ -122,7 +127,8 @@ class RpcFrameTransport {
         fragmentIndex < 0 ||
         fragmentIndex >= fragmentCount ||
         messageBytes < 1 ||
-        messageBytes > maxMessageBytes) {
+        messageBytes > maxMessageBytes ||
+        dataBase64.length > maxPhysicalFrameBytes) {
       return true;
     }
 
@@ -132,7 +138,9 @@ class RpcFrameTransport {
     } catch (_) {
       return true;
     }
-    if (chunk.length > _fragmentPayloadBytes) return true;
+    // The local send chunk is a conservative sizing choice, not the inbound
+    // protocol limit. Official peers fill frames up to the physical budget.
+    if (chunk.length > messageBytes) return true;
 
     final existing = _assemblies[messageSeq];
     if (existing != null &&
@@ -159,7 +167,7 @@ class RpcFrameTransport {
         _messageController.add(message);
         sendPayload({
           'zcode_type': 'rpc-frame-ack',
-          'bridgeSessionId': bridgeSessionId,
+          ..._identity,
           'ackMessageSeq': messageSeq,
         });
       } else {
