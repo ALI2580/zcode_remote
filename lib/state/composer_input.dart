@@ -194,6 +194,22 @@ class ComposerInput extends TextEditingController {
   set value(TextEditingValue next) {
     final old = super.value;
     if (!_inserting && old.text != next.text && _references.isNotEmpty) {
+      final selection = next.selection;
+      final deletesTrailingSpace = old.text.length == next.text.length + 1 &&
+          selection.isValid &&
+          selection.isCollapsed &&
+          selection.baseOffset == next.text.length &&
+          old.text.endsWith(' ');
+      if (deletesTrailingSpace) {
+        for (final token in _references.reversed) {
+          if (token.end == old.text.length - 1) {
+            next = TextEditingValue(
+                text: old.text.substring(0, token.start),
+                selection: TextSelection.collapsed(offset: token.start));
+            break;
+          }
+        }
+      }
       var start = 0;
       while (start < old.text.length &&
           start < next.text.length &&

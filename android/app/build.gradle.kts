@@ -61,6 +61,13 @@ android {
             applicationIdSuffix = if (qa) ".qa" else ".dev"
             resValue("string", "app_name", if (qa) "ZcodeRemote QA" else "ZcodeRemote Dev")
         }
+        if (System.getenv("ZCODE_ANDROID_QA") == "true") {
+            getByName("profile") {
+                applicationIdSuffix = ".qa"
+                signingConfig = signingConfigs.getByName("debug")
+                resValue("string", "app_name", "ZcodeRemote QA")
+            }
+        }
         release {
             val releaseSigning = signingConfigs.findByName("release")
             if (releaseSigning != null && releaseSigning.storeFile != null) {

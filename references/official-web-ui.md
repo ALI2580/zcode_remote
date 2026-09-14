@@ -103,6 +103,17 @@ search→sq、agent→rtt、todo→Art（默认隐藏）、ask-user-question→M
 （kindLabel=正在询问/已询问，secondary=N 个问题）、message→drt/crt、
 changesGroup→utt、executeGroup→mtt、default→Dq。
 
+2026-09-12 完整分支补充（js-1.js `switch(t.family)`）：
+plan-guidance→Qnt、task-control→Trt（toolName===`TaskOutput` 时→xrt）、
+skill→XJ、session-context→irt、explore→Uet、switch-mode→hrt、goal→hnt、
+family===`node-repl`→znt、NJ(e) 命中→Ynt；default→Dq。
+
+特殊 toolName 分支：`Agent`/`Task` 展开态透传 `output.text` 并携带
+`output.truncated`（与本地 truncated 指示一致）；`Skill` 携带
+`step.skillMetadata.qualifiedName` 与 `skillMetadata.pluginId`；
+`RespondToCoordinator` 走 message 族 crt 分支；另出现
+`AskUserQuestion`/`ExitPlanMode`/`Glob`/`Write` 独立判断。
+
 ### 文件编辑与 diff（WK + TG/j7e/wG）
 
 - diffCount 角标：`+N -N`，class `text-diff-added` / `text-diff-removed`，

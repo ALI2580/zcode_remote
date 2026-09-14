@@ -6,6 +6,8 @@ import '../../protocol/plan_reset.dart';
 import '../../protocol/usage_statistics.dart';
 import '../../state/client_preferences.dart';
 import '../../state/composer_usage.dart';
+import '../../state/plan_resets.dart';
+import '../../state/usage_plan_selection.dart';
 import '../../state/usage_statistics.dart';
 import '../official_icons.dart';
 import '../theme.dart';
@@ -19,63 +21,157 @@ class UsagePage extends StatefulWidget {
       {super.key,
       required this.usage,
       this.application = false,
-      this.statistics});
+      this.statistics,
+      this.embedded = false,
+      this.active = true,
+      this.showHeader = true,
+      this.sourceKey,
+      this.planSelection,
+      this.onConfigurePlans});
   final ComposerUsage usage;
   final bool application;
   final UsageStatistics? statistics;
+  final bool embedded;
+  final bool active;
+
+  /// Embedders that already render the page title can keep the controls while
+  /// suppressing this page's duplicate heading.
+  final bool showHeader;
+
+  /// Stable device/bridge/workspace identity supplied by an embedding owner.
+  /// It prevents a late refresh from being applied after the source changes.
+  final String? sourceKey;
+
+  /// Official `sidebarUsageCodingPlanProviderPreference` owner. When present
+  /// the Coding Plan tab renders from this selection instead of the chat
+  /// composer's provider, with the official candidate switch.
+  final UsagePlanSelection? planSelection;
+
+  /// Opens the model settings so an unconfigured visitor can connect a
+  /// Coding Plan account (official billing banner action).
+  final VoidCallback? onConfigurePlans;
   @override
   State<UsagePage> createState() => _UsagePageState();
 }
 
 class _UsagePageState extends State<UsagePage> {
-  late final UsageStatistics _stats;
+  late UsageStatistics _stats;
   late bool _application;
   Timer? _timer;
   VoidCallback? _stopObserving;
+
+  /// The Coding Plan tab renders from the statistics-owned selection when the
+  /// embedder supplies one; App usage always follows the given usage.
+  ComposerUsage get _usage => widget.planSelection?.usage ?? widget.usage;
+
   @override
   void initState() {
     super.initState();
     _application = widget.application;
     _stats = widget.statistics ?? UsageStatistics(widget.usage.transport);
-    widget.usage.addListener(_usageChanged);
+    if (widget.active) _activate();
+  }
+
+  @override
+  void didUpdateWidget(covariant UsagePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final sourceChanged = oldWidget.usage != widget.usage ||
+        oldWidget.statistics != widget.statistics ||
+        oldWidget.sourceKey != widget.sourceKey ||
+        oldWidget.planSelection != widget.planSelection;
+    if (sourceChanged) {
+      _deactivate(oldWidget);
+      if (oldWidget.statistics == null) _stats.dispose();
+      _stats = widget.statistics ?? UsageStatistics(widget.usage.transport);
+      _application = widget.application;
+      if (widget.active) _activate();
+    } else if (oldWidget.active != widget.active) {
+      if (widget.active) {
+        _activate();
+      } else {
+        _deactivate(oldWidget);
+      }
+    }
+  }
+
+  bool _current(ComposerUsage usage, UsageStatistics stats, String? sourceKey) {
+    return mounted &&
+        widget.active &&
+        identical(_stats, stats) &&
+        identical(_usage, usage) &&
+        widget.sourceKey == sourceKey;
+  }
+
+  void _activate() {
+    if (!widget.active || _timer != null) return;
+    final usage = _usage, stats = _stats, sourceKey = widget.sourceKey;
+    usage.addListener(_usageChanged);
+    widget.planSelection?.addListener(_usageChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _stopObserving = widget.usage.observeResets();
-      _stats.select(application: _application, source: widget.usage.source);
-      unawaited(widget.usage.refresh().then((_) {
-        if (mounted) return widget.usage.refreshResetStatus();
-      }));
+      if (!_current(usage, stats, sourceKey)) return;
+      _stopObserving = usage.observeResets();
+      final selection = widget.planSelection;
+      if (selection != null) {
+        // The statistics source follows the persisted preference, never the
+        // chat composer provider.
+        unawaited(selection.refreshSelection().then((_) async {
+          if (!_current(usage, stats, sourceKey)) return;
+          stats.select(application: _application, source: usage.source);
+          await usage.refresh();
+        }));
+      } else {
+        stats.select(application: _application, source: usage.source);
+        unawaited(usage.refresh().then((_) {
+          if (_current(usage, stats, sourceKey)) {
+            return usage.refreshResetStatus();
+          }
+        }));
+      }
     });
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted &&
-          widget.usage.source != null &&
-          widget.usage.resets.state(widget.usage.source!).status != null) {
+      if (!_current(usage, stats, sourceKey)) return;
+      final source = usage.source;
+      final state = source == null ? null : usage.resets.state(source);
+      if (state != null &&
+          state.entries.values.any((entry) =>
+              entry.automatic || entry.phase == PlanResetPhase.processing)) {
         setState(() {});
       }
     });
   }
 
   void _usageChanged() {
-    if (_stats.source?.key != widget.usage.source?.key) {
-      _stats.select(application: _application, source: widget.usage.source);
+    if (!widget.active) return;
+    if (_stats.source?.key != _usage.source?.key) {
+      _stats.select(application: _application, source: _usage.source);
     }
     if (mounted) setState(() {});
   }
 
   Future<void> _refresh() async {
-    await widget.usage.refresh(force: true);
-    if (!mounted) return;
-    await Future.wait([
-      _stats.refresh(force: true),
-      widget.usage.refreshResetStatus(force: true)
-    ]);
+    final usage = _usage, stats = _stats, sourceKey = widget.sourceKey;
+    if (widget.planSelection case final selection?) {
+      await selection.refreshSelection();
+    }
+    await usage.refresh(force: true);
+    if (!_current(usage, stats, sourceKey)) return;
+    await Future.wait(
+        [stats.refresh(force: true), usage.refreshResetStatus(force: true)]);
+  }
+
+  void _deactivate(UsagePage oldWidget) {
+    final usage = oldWidget.planSelection?.usage ?? oldWidget.usage;
+    _timer?.cancel();
+    _timer = null;
+    _stopObserving?.call();
+    _stopObserving = null;
+    usage.removeListener(_usageChanged);
+    oldWidget.planSelection?.removeListener(_usageChanged);
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
-    _stopObserving?.call();
-    widget.usage.removeListener(_usageChanged);
+    _deactivate(widget);
     if (widget.statistics == null) _stats.dispose();
     super.dispose();
   }
@@ -85,83 +181,112 @@ class _UsagePageState extends State<UsagePage> {
       listenable: _stats,
       builder: (context, _) {
         final ink = ZInk.of(Theme.of(context).colorScheme);
+        final contents = _bodyContents(context, ink);
+        final body = Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 880),
+                child: widget.embedded
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: contents)
+                    : ListView(
+                        key: const ValueKey('usage-page-scroll'),
+                        padding: const EdgeInsets.fromLTRB(24, 24, 24, 40),
+                        children: contents)));
+        if (widget.embedded) return body;
         return Scaffold(
-            appBar: AppBar(
-                title: Text(uiText(context, '使用统计', 'Usage statistics'))),
-            body: SafeArea(
-                top: false,
-                child: Align(
-                    alignment: Alignment.topCenter,
-                    child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 896),
-                        child: ListView(
-                            key: const ValueKey('usage-page-scroll'),
-                            padding: const EdgeInsets.fromLTRB(24, 24, 24, 40),
-                            children: [
-                              Wrap(
-                                  spacing: 12,
-                                  runSpacing: 12,
-                                  alignment: WrapAlignment.spaceBetween,
-                                  crossAxisAlignment: WrapCrossAlignment.center,
-                                  children: [
-                                    UsageSwitch(
-                                        value: _application,
-                                        options: {
-                                          true: uiText(
-                                              context, '应用统计', 'Application'),
-                                          false: uiText(
-                                              context, '个人套餐', 'Personal plan')
-                                        },
-                                        onChanged: (value) {
-                                          setState(() => _application = value);
-                                          _stats.select(
-                                              application: value,
-                                              source: widget.usage.source);
-                                        }),
-                                    if (!_application &&
-                                        widget.usage.source != null)
-                                      Text(
-                                          widget.usage.source!.isTeam
-                                              ? uiText(
-                                                  context, '团队套餐', 'Team plan')
-                                              : widget.usage.source!.family ==
-                                                      'bigmodel'
-                                                  ? 'GLM Coding Plan'
-                                                  : 'Z.AI Coding Plan',
-                                          style: TextStyle(
-                                              fontSize: 12,
-                                              color: ink.subtlest)),
-                                  ]),
-                              const SizedBox(height: 24),
-                              if (_stats.timeZoneFailed)
-                                _error(uiText(context, '无法读取本地时区，请刷新重试。',
-                                    'Could not read the local time zone. Refresh to retry.')),
-                              if (_application)
-                                ..._appContent(context)
-                              else
-                                ..._codingContent(context),
-                              const SizedBox(height: 20),
-                              Align(
-                                  alignment: Alignment.centerRight,
-                                  child: OutlinedButton.icon(
-                                      key: const ValueKey('usage-page-refresh'),
-                                      onPressed: _stats.initializing ||
-                                              _stats.app.loading ||
-                                              _stats.coding.loading
-                                          ? null
-                                          : _refresh,
-                                      icon: const LucideIcon('refresh-cw',
-                                          size: 14),
-                                      label: Text(
-                                          uiText(context, '刷新', 'Refresh')))),
-                            ])))));
+            appBar: AppBar(title: const SizedBox.shrink()),
+            body: SafeArea(top: false, child: body));
       });
+
+  List<Widget> _bodyContents(BuildContext context, InkTokens ink) => [
+        Wrap(
+            spacing: 16,
+            runSpacing: 12,
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Wrap(
+                  spacing: 16,
+                  runSpacing: 12,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    if (widget.showHeader)
+                      Text(uiText(context, '使用统计', 'Usage statistics'),
+                          style: const TextStyle(
+                              fontSize: 32, fontWeight: FontWeight.w600)),
+                    UsageSwitch(
+                        value: _application,
+                        options: {
+                          true: uiText(context, '应用用量', 'App usage'),
+                          false: uiText(context, '个人套餐', 'Personal plan')
+                        },
+                        onChanged: (value) {
+                          setState(() => _application = value);
+                          _stats.select(
+                              application: value, source: _usage.source);
+                        }),
+                  ]),
+              if (!_application && _usage.source != null)
+                Text(
+                    _usage.snapshot?.planName ??
+                        (_usage.source!.isTeam
+                            ? uiText(context, '团队套餐', 'Team plan')
+                            : _usage.source!.family == 'bigmodel'
+                                ? 'GLM Coding Plan'
+                                : 'Z.AI Coding Plan'),
+                    style: TextStyle(fontSize: 12, color: ink.subtlest)),
+            ]),
+        if (!_application) ..._planExpiry(context, ink),
+        const SizedBox(height: 24),
+        if (_stats.timeZoneFailed)
+          _error(uiText(context, '无法读取本地时区，请刷新重试。',
+              'Could not read the local time zone. Refresh to retry.')),
+        if (_application)
+          ..._appContent(context)
+        else
+          ..._codingContent(context),
+        const SizedBox(height: 20),
+        Align(
+            alignment: Alignment.centerRight,
+            child: OutlinedButton.icon(
+                key: const ValueKey('usage-page-refresh'),
+                onPressed: _stats.initializing ||
+                        _stats.app.loading ||
+                        _stats.coding.loading
+                    ? null
+                    : _refresh,
+                icon: const LucideIcon('refresh-cw', size: 14),
+                label: Text(uiText(context, '刷新', 'Refresh')))),
+      ];
   Widget _error(String text) => Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Text(text,
           style: TextStyle(
               fontSize: 14,
               color: ZInk.of(Theme.of(context).colorScheme).diffRemoved)));
+
+  /// Official `EHt`: a renewal date outranks the expiry date; a missing or
+  /// invalid pair renders nothing instead of inventing a date.
+  List<Widget> _planExpiry(BuildContext context, InkTokens ink) {
+    final snap = _usage.snapshot;
+    final millis = snap?.renewTime ?? snap?.expireTime;
+    if (millis == null) return const [];
+    final isRenew = snap!.renewTime != null;
+    final date = DateFormat.yMd(Localizations.localeOf(context).toString())
+        .format(DateTime.fromMillisecondsSinceEpoch(millis).toLocal());
+    return [
+      Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+              isRenew
+                  ? uiText(context, '套餐将于 $date 续期', 'Plan renews $date')
+                  : uiText(context, '套餐将于 $date 到期', 'Plan expires $date'),
+              style: TextStyle(fontSize: 14, color: ink.subtlest))),
+    ];
+  }
+
   Widget _heading(String text, {Widget? trailing}) => Wrap(
           spacing: 12,
           runSpacing: 8,
@@ -215,27 +340,69 @@ class _UsagePageState extends State<UsagePage> {
     ];
   }
 
+  /// Official settings.usage status split (`entitlementError` /
+  /// `entitlementNotConfigured` / `entitlementLoginRequired` /
+  /// `entitlementNoPlan`): a read failure must never render as "no plan",
+  /// and an unconfigured connection shows the official billing banner
+  /// instead of a bare empty state.
   List<Widget> _codingContent(BuildContext context) {
+    final selection = widget.planSelection;
     final read = _stats.coding, snapshot = read.snapshot;
-    if (widget.usage.source == null || widget.usage.source!.isStartPlan) {
+    if (selection?.candidatesFailed == true) {
       return [
         UsageEmpty(
-            loading: widget.usage.loadingSelection || _stats.initializing,
-            message: widget.usage.loadingSelection
-                ? null
-                : uiText(context, '当前连接暂无可用的编程套餐统计。',
-                    'No Coding Plan statistics available for this connection.')),
+            message: uiText(context, '无法读取编程套餐来源，请检查连接后重试。',
+                'Could not read Coding Plan sources. Check the connection and retry.')),
+        _retryButton(context, selection!.refreshSelection),
       ];
     }
+    if (selection != null &&
+        !selection.loadingCandidates &&
+        selection.options.isEmpty &&
+        _usage.source == null &&
+        !_usage.failed) {
+      // Official billing banner: no connected Coding Plan account at all.
+      return [_billingBanner(context)];
+    }
+    if (_usage.source == null || _usage.source!.isStartPlan) {
+      return [
+        UsageEmpty(
+            loading:
+                _usage.loadingSelection || selection?.loadingCandidates == true,
+            message: _usage.loadingSelection
+                ? null
+                : uiText(context, '未找到可查询额度的 Z.ai / BigModel 编程套餐账号。请先连接编程套餐账号。',
+                    'No queryable Z.ai / BigModel Coding Plan account was found. Connect one first.')),
+        if (!_usage.loadingSelection &&
+            selection?.loadingCandidates != true &&
+            widget.onConfigurePlans != null)
+          _configureButton(context),
+      ];
+    }
+    final unavailable =
+        snapshot == null ? null : _unavailableReason(context, snapshot);
     return [
+      if (selection?.hasChoice == true)
+        Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _sourceSwitch(context, selection!))),
+      if (_usage.failed)
+        _error(uiText(context, '无法读取编程套餐权益。请稍后重试，或检查供应商配置。',
+            'Could not read the Coding Plan entitlement. Retry later or check the provider configuration.')),
       if (read.failed)
         _error(uiText(context, '套餐统计更新失败，请刷新重试。',
             'Could not update plan statistics. Refresh to retry.')),
-      if (snapshot == null)
+      if (unavailable != null) ...[
+        UsageEmpty(message: unavailable),
+        if (widget.onConfigurePlans != null &&
+            snapshot!.raw['unavailableReason'] == 'not_configured')
+          _configureButton(context),
+      ] else if (snapshot == null)
         UsageEmpty(loading: read.loading || _stats.initializing)
       else ...[
-        _UsageQuotas(
-            usage: widget.usage, snapshot: snapshot, onRefresh: _refresh),
+        _UsageQuotas(usage: _usage, snapshot: snapshot, onRefresh: _refresh),
         const SizedBox(height: 20),
         _heading(uiText(context, '活跃度', 'Activity')),
         const SizedBox(height: 16),
@@ -256,6 +423,88 @@ class _UsagePageState extends State<UsagePage> {
         _ChartCard(child: UsageChart(plot: snapshot.health, unit: 'tokens/s')),
       ],
     ];
+  }
+
+  /// Official `unavailableReason` → visible copy. `null` means the snapshot
+  /// carries real data and the normal body renders.
+  String? _unavailableReason(BuildContext context, CodingUsageSnapshot snapshot) {
+    final reason = snapshot.raw['unavailableReason'];
+    final unconfigured =
+        snapshot.providerId.isEmpty;
+    if (!unconfigured) return null;
+    return switch (reason) {
+      'no_plan' =>
+        uiText(context, '暂无有效编程套餐', 'No active Coding Plan'),
+      'not_authenticated' =>
+        uiText(context, '需要先登录', 'Sign-in required'),
+      'not_configured' => uiText(
+          context,
+          '未找到可查询额度的 Z.ai / BigModel 编程套餐账号。请先连接编程套餐账号。',
+          'No queryable Z.ai / BigModel Coding Plan account was found. Connect one first.'),
+      _ => null,
+    };
+  }
+
+  Widget _retryButton(BuildContext context, VoidCallback onRetry) =>
+      Align(
+          alignment: Alignment.center,
+          child: OutlinedButton.icon(
+              onPressed: onRetry,
+              icon: const LucideIcon('refresh-cw', size: 14),
+              label: Text(uiText(context, '重试', 'Retry'))));
+
+  Widget _configureButton(BuildContext context) => Align(
+      alignment: Alignment.center,
+      child: FilledButton.tonal(
+          onPressed: widget.onConfigurePlans,
+          child: Text(uiText(context, '去连接编程套餐', 'Connect a Coding Plan'))));
+
+  /// Official `settings.usage.billingBanner`: shown when neither coding-plan
+  /// provider is connected, with the plan purchase/configuration entry.
+  Widget _billingBanner(BuildContext context) {
+    final ink = ZInk.of(Theme.of(context).colorScheme);
+    return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+            color: ink.surfaceFill, borderRadius: BorderRadius.circular(12)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(uiText(context, '编程套餐', 'Coding Plan'),
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 6),
+          Text(
+              uiText(
+                  context,
+                  '连接 Z.ai / BigModel 账号后查询编程套餐权益，购买或配置后回到 ZCode 即可继续编码。',
+                  'Connect a Z.ai / BigModel account to query Coding Plan benefits. Purchase or configure, then return to ZCode to keep coding.'),
+              style: TextStyle(fontSize: 14, color: ink.subtlest)),
+          if (widget.onConfigurePlans != null) ...[
+            const SizedBox(height: 12),
+            FilledButton.tonal(
+                onPressed: widget.onConfigurePlans,
+                child: Text(
+                    uiText(context, '去连接编程套餐', 'Connect a Coding Plan'))),
+          ],
+        ]));
+  }
+
+  /// Official `ae`/`l2e`: switching the statistics source persists the
+  /// preference and re-resolves the entitlement.
+  Widget _sourceSwitch(BuildContext context, UsagePlanSelection selection) {
+    final ink = ZInk.of(Theme.of(context).colorScheme);
+    return Wrap(spacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+      Text(uiText(context, '来源', 'Source'),
+          style: TextStyle(fontSize: 12, color: ink.subtlest)),
+      UsageSwitch(
+          value: selection.selectedProvider,
+          options: {
+            for (final option in selection.options)
+              option.providerId: option.label
+          },
+          onChanged: (value) {
+            if (value != null) selection.select(value);
+          }),
+    ]);
   }
 }
 

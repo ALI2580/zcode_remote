@@ -117,7 +117,7 @@ class _TaskNavigationState extends State<TaskNavigation> {
         entry.task.raw['remoteSessionId'] ?? '',
       ].join(' ').toLowerCase().contains(widget.query.trim().toLowerCase());
   Future<void> _open(SidebarTask entry) async {
-    if (!widget.connected || _opening != null || _busy.contains(entry.key)) {
+    if (!widget.connected || _opening != null) {
       return;
     }
     setState(() {
@@ -267,7 +267,8 @@ class _TaskNavigationState extends State<TaskNavigation> {
             entry: entry,
             selected: entry.project.workspace.key == widget.activeWorkspace &&
                 entry.task.sessionId == widget.activeTask,
-            busy: _busy.contains(entry.key) || _opening == entry.key,
+            busy: _busy.contains(entry.key),
+            switching: _opening == entry.key,
             enabled: widget.connected && _opening == null,
             projectLabel: projectLabel,
             sort: widget.preferences.taskSort,
@@ -488,6 +489,7 @@ class _TaskRow extends StatefulWidget {
       {required this.entry,
       required this.selected,
       required this.busy,
+      required this.switching,
       required this.enabled,
       required this.projectLabel,
       required this.sort,
@@ -499,7 +501,12 @@ class _TaskRow extends StatefulWidget {
       required this.onDelete,
       required this.onMenu});
   final SidebarTask entry;
-  final bool selected, busy, enabled, projectLabel, confirmingArchive;
+  final bool selected,
+      busy,
+      switching,
+      enabled,
+      projectLabel,
+      confirmingArchive;
   final String sort;
   final VoidCallback onOpen, onPin, onArchive, onUnarchive, onDelete;
   final void Function(BuildContext) onMenu;
@@ -513,9 +520,10 @@ class _TaskRowState extends State<_TaskRow> {
   Widget build(BuildContext context) {
     final ink = ZInk.of(Theme.of(context).colorScheme);
     final entry = widget.entry;
-    final actions = widget.enabled &&
-        (_hovered || widget.selected || widget.confirmingArchive);
-    final enabled = widget.enabled && !widget.busy;
+    // Official KEt exposes pin/archive on hover or pending archive only; an
+    // actively selected row remains in its lower-density read-only state.
+    final actions = widget.enabled && (_hovered || widget.confirmingArchive);
+    final enabled = widget.enabled && !widget.switching;
     final age = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(
         widget.sort == 'created'
             ? entry.task.createdAt
@@ -531,49 +539,57 @@ class _TaskRowState extends State<_TaskRow> {
         onEnter: (_) => setState(() => _hovered = true),
         onExit: (_) => setState(() => _hovered = false),
         child: Material(
-            color: widget.selected ? ink.hover : Colors.transparent,
+            color: widget.selected
+                ? ink.text.withValues(alpha: 0.10)
+                : Colors.transparent,
             borderRadius: BorderRadius.circular(8),
-            child: Builder(
-                builder: (anchor) => Semantics(
-                    onLongPress: enabled ? () => widget.onMenu(anchor) : null,
-                    child: InkWell(
-                        key: ValueKey('sidebar-task-${entry.key}'),
-                        onTap: enabled ? widget.onOpen : null,
-                        // Let the initiating pointer finish before adding a route.
-                        // Opening on down can leave Android's row gesture active
-                        // after a popup action rebuilds or moves this row.
-                        onLongPressUp:
+            child: Opacity(
+                opacity: widget.switching ? 0.8 : 1,
+                child: Builder(
+                    builder: (anchor) => Semantics(
+                        onLongPress:
                             enabled ? () => widget.onMenu(anchor) : null,
-                        onSecondaryTap:
-                            enabled ? () => widget.onMenu(anchor) : null,
-                        borderRadius: BorderRadius.circular(8),
-                        child: Container(
-                            constraints: const BoxConstraints(minHeight: 32),
-                            padding: const EdgeInsets.only(left: 6, right: 4),
-                            child: Row(children: [
-                              if (widget.busy)
-                                const SizedBox(
-                                    width: 24,
-                                    height: 24,
-                                    child: Padding(
-                                        padding: EdgeInsets.all(4),
+                        child: InkWell(
+                            key: ValueKey('sidebar-task-${entry.key}'),
+                            onTap: enabled ? widget.onOpen : null,
+                            // Let the initiating pointer finish before adding a route.
+                            // Opening on down can leave Android's row gesture active
+                            // after a popup action rebuilds or moves this row.
+                            onLongPressUp:
+                                enabled ? () => widget.onMenu(anchor) : null,
+                            onSecondaryTap:
+                                enabled ? () => widget.onMenu(anchor) : null,
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
+                                constraints:
+                                    const BoxConstraints(minHeight: 32),
+                                padding:
+                                    const EdgeInsets.only(left: 10, right: 4),
+                                child: Row(children: [
+                                  if (widget.busy || widget.switching)
+                                    SizedBox(
+                                        width: 16,
+                                        height: 16,
                                         child: CircularProgressIndicator(
-                                            strokeWidth: 1.5)))
-                              else if (actions && !entry.archived)
-                                _ActionIcon(
-                                    icon: 'pin',
-                                    size: 24,
-                                    label: entry.pinned
-                                        ? uiText(context, '取消置顶', 'Unpin task')
-                                        : uiText(context, '置顶任务', 'Pin task'),
-                                    onTap: enabled ? widget.onPin : null)
-                              else
-                                SizedBox(
-                                    width: 24,
-                                    height: 24,
-                                    child: Center(
-                                        child:
-                                            entry.task.raw['unreadAt'] != null
+                                            strokeWidth: 1.5,
+                                            color: ink.subtlest))
+                                  else if (actions && !entry.archived)
+                                    _ActionIcon(
+                                        icon: 'pin',
+                                        size: 16,
+                                        label: entry.pinned
+                                            ? uiText(
+                                                context, '取消置顶', 'Unpin task')
+                                            : uiText(
+                                                context, '置顶任务', 'Pin task'),
+                                        onTap: enabled ? widget.onPin : null)
+                                  else
+                                    SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: Center(
+                                            child: entry.task.raw['unreadAt'] !=
+                                                    null
                                                 ? Container(
                                                     width: 6,
                                                     height: 6,
@@ -585,77 +601,96 @@ class _TaskRowState extends State<_TaskRow> {
                                                         size: 16,
                                                         color: ink.subtlest)
                                                     : null)),
-                              const SizedBox(width: 4),
-                              Expanded(
-                                  child: Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                          vertical: 5),
-                                      child: Text(
-                                          entry.task.title.isEmpty
-                                              ? uiText(
-                                                  context, '新任务', 'New task')
-                                              : entry.task.title,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                              fontSize: 14, color: ink.text)))),
-                              if (!actions) ...[
-                                if (widget.projectLabel)
-                                  Flexible(
+                                  const SizedBox(width: 8),
+                                  Expanded(
                                       child: Padding(
-                                          padding:
-                                              const EdgeInsets.only(left: 6),
-                                          child: Text(
-                                              entry.project.workspace.title,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: TextStyle(
-                                                  fontSize: 12,
-                                                  color: ink.subtlest)))),
-                                Padding(
-                                    padding: const EdgeInsets.only(left: 6),
-                                    child: Text(time,
-                                        style: TextStyle(
-                                            fontSize: 12,
-                                            color: ink.subtlest))),
-                              ],
-                              if (actions && !entry.archived)
-                                widget.confirmingArchive
-                                    ? TextButton(
-                                        style: TextButton.styleFrom(
-                                            foregroundColor: ink.diffRemoved,
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 6),
-                                            minimumSize: const Size(40, 28),
-                                            tapTargetSize: MaterialTapTargetSize
-                                                .shrinkWrap),
-                                        onPressed:
-                                            enabled ? widget.onArchive : null,
-                                        child: Text(
-                                            uiText(context, '确认', 'Confirm')))
-                                    : _ActionIcon(
-                                        icon: 'archive',
-                                        size: 24,
+                                          padding: EdgeInsets.zero,
+                                          child: SizedBox(
+                                              height: 24,
+                                              child: Align(
+                                                  alignment:
+                                                      Alignment.centerLeft,
+                                                  child: Text(
+                                                      entry.task.title.isEmpty
+                                                          ? uiText(context,
+                                                              '新任务', 'New task')
+                                                          : entry.task.title,
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: TextStyle(
+                                                          fontSize: 14,
+                                                          color: ink.text)))))),
+                                  if (!actions) ...[
+                                    if (widget.projectLabel)
+                                      Flexible(
+                                          child: Padding(
+                                              padding: const EdgeInsets.only(
+                                                  left: 6),
+                                              child: Text(
+                                                  entry.project.workspace.title,
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                      fontSize: 14,
+                                                      color: ink.subtlest)))),
+                                    Padding(
+                                        padding: const EdgeInsets.only(
+                                            left: 6, right: 2),
+                                        child: Text(time,
+                                            style: TextStyle(
+                                                fontSize: 14,
+                                                color: ink.subtlest))),
+                                  ],
+                                  if (actions && !entry.archived)
+                                    widget.confirmingArchive
+                                        ? TextButton(
+                                            style: TextButton.styleFrom(
+                                                foregroundColor:
+                                                    ink.diffRemoved,
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                        horizontal: 6),
+                                                minimumSize: const Size(40, 28),
+                                                tapTargetSize:
+                                                    MaterialTapTargetSize
+                                                        .shrinkWrap),
+                                            onPressed: enabled
+                                                ? widget.onArchive
+                                                : null,
+                                            child: Text(uiText(
+                                                context, '确认', 'Confirm')))
+                                        : _ActionIcon(
+                                            icon: 'archive',
+                                            size: 28,
+                                            iconSize: 14,
+                                            label: uiText(context, '归档任务',
+                                                'Archive task'),
+                                            onTap: enabled
+                                                ? widget.onArchive
+                                                : null),
+                                  if (actions && entry.archived) ...[
+                                    _ActionIcon(
+                                        icon: 'archive-restore',
+                                        size: 28,
+                                        iconSize: 14,
+                                        label: uiText(context, '取消归档任务',
+                                            'Unarchive task'),
+                                        onTap: enabled
+                                            ? widget.onUnarchive
+                                            : null),
+                                    _ActionIcon(
+                                        icon: 'trash-2',
+                                        size: 28,
+                                        iconSize: 14,
                                         label: uiText(
-                                            context, '归档任务', 'Archive task'),
+                                            context, '删除任务', 'Delete task'),
+                                        color: ink.diffRemoved,
                                         onTap:
-                                            enabled ? widget.onArchive : null),
-                              if (actions && entry.archived) ...[
-                                _ActionIcon(
-                                    icon: 'archive-restore',
-                                    size: 24,
-                                    label: uiText(
-                                        context, '取消归档任务', 'Unarchive task'),
-                                    onTap: enabled ? widget.onUnarchive : null),
-                                _ActionIcon(
-                                    icon: 'trash-2',
-                                    size: 24,
-                                    label:
-                                        uiText(context, '删除任务', 'Delete task'),
-                                    color: ink.diffRemoved,
-                                    onTap: enabled ? widget.onDelete : null),
-                              ],
-                            ])))))));
+                                            enabled ? widget.onDelete : null),
+                                  ],
+                                ]))))))));
   }
 }
 
@@ -665,11 +700,13 @@ class _ActionIcon extends StatelessWidget {
       required this.label,
       required this.onTap,
       this.selected = false,
+      this.iconSize = 16,
       this.size = 28,
       this.color});
   final String icon, label;
   final VoidCallback? onTap;
   final bool selected;
+  final double iconSize;
   final double size;
   final Color? color;
   @override
@@ -691,6 +728,6 @@ class _ActionIcon extends StatelessWidget {
                         borderRadius: BorderRadius.circular(6)),
                     alignment: Alignment.center,
                     child: LucideIcon(icon,
-                        size: 16, color: color ?? ink.subtlest)))));
+                        size: iconSize, color: color ?? ink.subtlest)))));
   }
 }

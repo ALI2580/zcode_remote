@@ -1,6 +1,98 @@
 # Changelog
 
-## [0.1.0+10] · 侧栏同步与辅助功能（2026-09-09）
+## [0.1.0+11]
+
+### 二轮官方体验修复（U17–U26，2026-09-13）
+
+- U17 使用统计来源独立化：官方 `sidebarUsageCodingPlanProviderPreference` 语义落地——统计页 Coding Plan 来源改为客户端持久偏好与候选切换（Z.ai/BigModel），不再被聊天模型供应商绑定；页面区分加载/候选读取失败（可重试）/未连接（官方 billing banner）/`no_plan`/`not_authenticated`/`not_configured`/正常数据，失败不再伪装成"暂无套餐"。
+- U19 设置中心右侧改官方 `max-w-5xl`（1024）居中外壳，移除左对齐 864 上限。
+- U20 顶栏操作按钮贴右缘：修复标题 `Expanded` 与操作区 `Flexible` 平分剩余空间导致的尾部空白。
+- U26 通知与上岛主体内嵌设置右栏，删除二次导航；独立页保留窄屏路由。
+- U18 交互模式文案按桌面 Agent 暴露的模式集合反推家族（官方 `FYe` 键序），自定义供应商不再回退英文；GLM 计划模式英文对齐官方 `Plan mode`。
+- U21 回合文件变更摘要展开仅列文件，点击行/审查按钮统一从右侧面板打开指定文件红绿 Diff，不再默认内联展开。
+- U22 撤销入口保持真实 `canRewindFiles` 门控，补 in-flight 二次提交本地拒绝回归。
+- U23 模型设置两卡布局改为官方一体式边框容器（列表+内部分隔+详情），移除家族头占位 box 图标。
+- U24 引导入口改为官方多步骤向导（欢迎页/分类步骤/迁移/完成汇总），不再直接弹导入对话框；桌面专属步骤按远控门控显示说明。
+- U25 语音模型下载分阶段反馈（下载字节/百分比、解压、校验），未知总长显示已下载字节与不定进度条；bzip2 解压移出 UI isolate；模型存储共享实例，退出重进不丢进度。
+
+## [0.1.0+10]
+
+### r4（2026-09-13 下午，真实来源恢复与订阅泄漏修复）
+
+- 修复会话订阅退订失败被静默吞掉导致的注册泄漏：同一连接返回先前会话时 `subscribeConversationV4` 永远等不到 ack（60s 超时，源切换后必现）。现在退订失败会登记泄漏的 subscriptionId，下次订阅同会话前先补发退订；会话加载失败的重试按钮增加进行中反馈。
+- 真实来源验证恢复：ROG 原始长任务重放（搜索→壳内打开→返回）、模型/MCP 只读设置真实数据、ROG↔ALI 双来源实切隔离、被官方页抢占后的重连恢复，均已在覆盖安装的修复包上实测通过。
+- 官方同态对照新登记差距：模型设置缺内置智谱供应商组与套餐卡（余额/过期/升级）、设置缺"引导"入口、被踢原因未透出、搜索面板缺背景遮罩。详见 `references/ui-parity-current-todolist.md` 与 `build/visual-audit/ui-global-20260913-resume/r4-delivery.md`。
+
+### 官方 UI 对齐与交互修复（U01–U16，2026-09-13 候选）
+
+- 搜索接入已确认的数据源与任务定位；设备菜单按触发器和可用空间定位；侧栏连续动画与当前外壳内切换会话保留草稿、阅读位置和来源隔离。
+- 聊天编辑工具显示真实范围的内联红绿 diff，回合摘要采用 turnHeader.fileChanges 并正确处理零变更、缓存、文件审查和撤销门控；代码主题、行号、换行、字号与全文复制共享实际渲染链。
+- 修正底部终端在横屏键盘下的高度、重复避让与释放；主辅聊天、审查/摘要面板和模型/模式目录保持独立状态并消费设置刷新。
+- 离线语音初始化与识别工作移出 UI 执行路径，补充模型/权限错误入口、录音状态、真实识别预览和取消，停止后仅写入草稿，取消或切换来源后拒绝迟到结果。
+- 设置中心设备与统计内嵌；统一导航、宽窄布局和双语文案。模型设置补齐官方字段、提交时机、连接测试和本地 CAPTCHA adapter；插件、技能、MCP、命令、钩子和子智能体按来源及能力执行已确认协议，写后读回并刷新已有和后续 Composer 目录。
+- 修复插件 workspace 继承与配置增量、详情失败重试、命令表单独立目标、钩子整表并发与工作区信任、统计页返回后的 tab/range/滚动保持。
+- 修复真实目录中不可见的设置图标与 MCP 五项列表固定高度裁切；搜索按选中片段翻阅历史并定位实际正文，保留回合手动折叠，拒绝错误历史代次的无界重试。
+
+r3本地检查与可执行原生验收已完成，按契约50B保留全局未完成；有效配对、官方同态及真实验证码仍待外部条件。最终源码、回归、原生验证及恢复步骤见 `references/ui-parity-current-todolist.md` 和 `build/visual-audit/ui-global-20260912-resume/main-final-audit.md`。本条不改变版本号、不执行发布。
+
+### D3.2（第三十九批，官方撤销弹窗对照，阶段 d32-rewind-copy）
+
+- 撤销确认弹窗说明行文案对齐官方（「已被其他进程修改」）；官方真实弹窗（可安全撤销/不能安全撤销分组+撤销文件按钮）逐项对照一致。
+
+### D3.3（第三十三批，官方终端结构修复，阶段 d33-terminal-drawer）
+
+- 终端由侧工作面板 tab 迁出为官方结构的主区域底部抽屉（shell_layout 新增 bottomPanel 槽位）；顶栏新增独立「切换终端」按钮（square-terminal，更正旧「侧面板切换」判定）。
+- 新增 TerminalDrawer 官方 chrome：终端标签栏（shellLabel ?? 终端 N 命名、活动 tab 尾随 X、新建、抽屉关闭）；预测返回 LocalHistoryEntry、Ctrl+J 与命令中心 toggleTerminal/addTerminalTab 接线；控制键+输入框保留为触屏客户端扩展。
+- 真机验证抽屉打开→terminal channel 真实 create/数据流→dispose 全链（平板 ROG-STRIX）。
+
+### D3.1（第三十四批，changeSummary 官方对齐，阶段 d31-summary-official）
+
+- 撤销按钮迁至摘要卡头部行右侧（官方位置；canRewindFiles/rewindOpen 门控不变）。
+- 文件行改官方结构：文件类型图标（新增 Lucide file/file-text/file-code/file-image）+ 名称/目录拆分；官方品牌文件图标以 Lucide 近似记录。
+
+### D3.1（第三十五批，审查面板，阶段 d31-review-panel）
+
+- 「审查」→独立 diff 面板+切文件：FileChangesReviewPanel（文件 tab 栏+活动 X+面包屑+±计数+unified hunks+loading/error/retry+binary/裁剪消息）、FileChangesReviewHost InheritedWidget、shell `_WorkPanel.review` 持有控制器（行虚拟化回收安全）；共享 FileChangesHunksView 组件化；无 host 场景保留内联选择式 diff 回退。
+
+### D3.4（第二十五批，第七轮取证附录二）
+
+- permissionUpdates 项解析：addRules + behavior(allow/deny/ask) + rules[{toolName, ruleContent?}]，respond_permission 全字段闭合。
+- workspace_task_list_invalidated 严格 schema；钩子复审 decision 枚举别名跨 chunk 未定义，如实记录。
+
+### D2/D3.4（第二十七批，规则 24 合成实现，阶段 v13-goal-verification-row）
+
+- goal_verification 合成流行渲染落地（GoalVerificationRow：四状态+通过细分+reason/nextAction/迭代号，separator 形态，双 wire 形态识别），挂入会话行分派。
+- task_snapshot_invalidated 具名处理（WorkspaceMonitor.handleTaskSnapshotInvalidated：标记→重同步→清除，重复通知合并）。
+- 合成测试 10 用例；标记「已实现待真实验证」（视觉与真实流待桌面会话）。
+
+### D3.4（第二十四批，第六轮取证附录）
+
+- respond_permission.response 解析完成：decision allow/deny/escalate/modify + reason/modifiedInput/permissionUpdates。
+- taskCommand union 四成员确认（send_prompt/enqueue/promote/cancel，accepted|running|failed 状态基座）；goal_verification 完整 schema（synthetic 流行，dc={nextAction?,passed,reason}）。
+
+### D3.4（第二十三批，取证）
+
+- 官方 client-command union 七成员 schema 全解析（respond_permission/respond_elicitation/respond_workspace_hook_review/send_prompt/enqueue·promote·cancel_task_command）与流通知类型（goal_verification/task_snapshot_invalidated 等）。
+- 本地覆盖对照落档：resolveInteraction 与钩子四命令覆盖 respond_* 族；inputRouting/服务端队列覆盖 task_command 族；goal_verification 渲染待真实流取证。
+
+### 设置中心（V1.3 第二十一批，阶段 v13-hooks-plan-locale-official）
+
+- 套餐卡用量 tile 标签官方化（5h 用量/1w 用量）；钩子行 matcher 空显示「匹配全部」；钩子列表补官方「Hook 配置变更将在新会话中生效。」提示。
+- 钩子写链路经官方 qXt（saveHooks 全量数组写）交叉验证，实现逐字段一致。
+
+### 设置中心（V1.3 第二十批，阶段 v13-commands-locale-official）
+
+- 命令表单对齐官方全规格：标题+描述行、可选标签、四字段官方占位符、校验文案拆分（长度/字符/提示词必填）。
+- 删除确认改官方文案（删除命令 + 确定要删除命令「{name}」吗？此操作无法撤销。），保留两步确认语义。
+- 命令行分组标签本地化（用户命令/插件命令）；搁置 wire 重取证九项判定记录（agentSource=zcodeAgent 等）。
+
+### 设置中心（V1.3 第十九批，阶段 v13-empty-cards-official）
+
+- 钩子/插件/子智能体/命令/技能五节空态改为官方组合：标题+描述+按钮整体居中于整行宽虚线卡内（新增 _OfficialEmptyCard）。
+- 目录页 chrome 新建按钮移到刷新右侧并改为实心样式（官方位置/样式）；命令节计数去「项」、空态改官方文案+实心新建。
+- 修正钩子空态描述错字（以往任务→以在任务）；浏览器注释卡改官方左对齐。
+- 浏览器数据按钮平台门控取证记录（官方 web 为 stub、本地无平台服务走门控隐藏分支）。
+ · 侧栏同步与辅助功能（2026-09-09）
 
 - 置顶/归档列表记录读取起始修订号，忽略旧请求，防止确认后的成员状态被旧索引覆盖。
 - 长按抬起后打开任务菜单，修复原生连续操作失效，保留辅助功能长按动作。
@@ -27,6 +119,58 @@
 ## [Unreleased]
 
 ### Added
+- **插件节官方 chrome 对齐（2026-09-12）**：插件节重写为官方 chrome（计数/搜索/已安装/刷新）+官方空态三行卡（浏览插件按钮联动插件市场），行保留已验证 setPluginEnabled toggle；MCP 节官方行差异（stdio 描述/启停）因 wire 未捕获记录不实现。阶段 `v13-plugins-official` 双端同哈希。
+- **钩子节官方空态对齐（2026-09-12）**：新建按钮移至「已安装」行右侧；空态卡改官方三行结构（尚未安装钩子/描述/内建新建按钮）。阶段 `v13-hooks-official` 双端同哈希。
+- **常规语言徽章与外观描述行对齐（2026-09-12）**：语言徽章改官方「中文简体」；外观节七行补官方描述（界面主题/界面字号/代码字号/浅色·深色代码主题/显示行号/长行自动换行），`_row` 支持可选描述行。阶段 `v13-appearance-desc` 双端同哈希。
+- **套餐卡官方日期行与剩余额度卡组（2026-09-12）**：供应商详情套餐摘要卡接入只读 getEntitlementSnapshot（EHt 续费优先/同年省年份日期行；5 小时/每周/工具调用/ZCode MCP 额度卡，百分比+重置日期，缺值 --）；管理/解绑 wire 未捕获不实现。阶段 `v13-provider-plan-card` 双端同哈希。
+- **供应商详情套餐摘要卡（2026-09-12）**：详情卡连接方式下方按 E2.1 只读 pricing 渲染订阅产品摘要（标题+升级入口+权益），无订阅不渲染；阶段 `v13-provider-plan` 双端同哈希。
+- **模型设置官方双栏重排（2026-09-12）**：按官方截图重建——左栏供应商列表（智谱/自定义供应商分组、行 icon+名称+状态点、选中态、添加供应商）；右栏选中详情卡（名称+已启用 badge+连接方式下拉+操作与删除错误行）+「模型列表」组+添加模型；无 provider 时右栏回退既有 family 连接方式列表；写链路与 E1.3 prep 失效不变。阶段 `v13-provider-twopane` 双端同哈希。
+- **常规节官方 locale 全量校对（2026-09-12）**：从落盘 IntlProvider 中文块逐键校对——修复交互行为下拉直接显示原始值 `queue/guide`（改队列/引导），对齐提问自动继续/完整保留模型 I/O/显示思考过程/显示待办/分组探索工具/分组终端命令/分组文件更改/自动归档旧任务/归档保留时长九组标签并补官方描述行、继承系统终端 Profile 与增强 Find 和 Grep 描述、HTTP 代理三输入描述与 placeholder 官方全文；写链路不变。阶段 `v13-locale-batch9` 双端同哈希。
+- **子智能体节官方分组重建（2026-09-12）**：按 js-1 `$5`/`YJt` 分组判定实现内置/插件/已安装三分组、「内置子智能体 N 项」标题、工具 badge（空 tools=全部工具，否则 N 个工具）、计数语义修正（已安装只算 user 行）、搜索过滤作用全部分组；「继承默认」下拉与「新建」无 wire 不实现。阶段 `v13-subagents-batch10` 双端同哈希。
+- **账户菜单官方远控结构（2026-09-12）**：移除登录 TODO 占位（官方远控菜单无登录入口，OAuth 为桌面本地服务）；「登出」对齐官方「断开连接/Disconnect」并落地真实行为 `sessions.disconnect`（断开当前远端会话并返回设备页），含行为回归。阶段 `e21-disconnect` 双端同哈希。
+- **命令文件新建/编辑/删除（2026-09-12）**：官方远控命令页有新建入口且 `writeCommandFile`/`updateCommandFile`/`deleteCommandFile` wire 在落盘 bundle 明文——CommandsCatalog 三写方法（in-flight 去重、写代次防迟到、成功 list 权威回读、失败保留旧值重试）+ 官方校验表单（name 1-50 `[a-zA-Z0-9_-]`、prompt 必填、空可选省键、重名错误识别、编辑态按官方只要求 prompt）+ 两步删除确认。阶段 `e12-commands-crud`（269 文件）双端同哈希；四批全量 602/602、analyze 0、smoke 通过。
+- **设置中心常规节官方结构（2026-09-12）**：按官方四卡结构重建——界面语言+语言徽章、终端卡（继承系统终端 Profile/终端字体/集成终端 Shell（win32 门控，systemService 只读探测）/增强 Find 和 Grep）、HTTP 代理卡（代理/例外/CA 证书，独立保存）、行为卡（交互行为/自动处理提问/模型 IO/显示推理/显示任务清单/工具分组三键）、归档卡；新增 11+5 个 settingService 远端字段解析与逐键 update 保存（trim+dirty+Enter+成功回同步+失败保留重试）。官方无独立「对话」节，相关开关并入常规；钩子节自动处理提问同迁。
+- **记忆/索引库/浏览器控制节官方重建（2026-09-12）**：记忆节官方卡片+虚线桌面端提示卡；索引库节官方「代码库」组与官方标签；浏览器控制开关改经 pluginManagement 驱动 browser-use@zcode-plugins-official（与插件管理同一验证写链路），桌面专属「允许不安全证书」按官方 isDesktop 门控移出远控 UI。
+- **目录页官方骨架（2026-09-12）**：新增 `_catalogChrome` 共享骨架（作用域 pill+计数+本地搜索+「已安装 N」+刷新+虚线空态卡），子智能体/命令/技能/MCP 四节重建；插件节内联已安装插件行（复用 setPluginEnabled）。无验证 wire 的新建/继承默认/启停按钮一律不实现。
+- **钩子管理列表页（2026-09-12）**：更正第三批检索遗漏——官方 `hooksService.loadHooks/saveHooks`（全列表保存）与 hook 行模型在落盘 bundle 内完整可得；钩子节重建为官方管理列表（作用域/计数/搜索/已安装/刷新 + 虚线空态卡 + 行级启用开关），插件来源行按官方 editable 投影保持只读；新建/编辑表单字段已取证留下一增量。
+- **钩子新建/编辑/删除表单（2026-09-12）**：`_HookFormDialog` 按 js-1 WXt/UXt/GXt 语义落地——事件固定 7 项（默认 PreToolUse）、类型 process（默认）/command、matcher、命令必填、process 参数每行一个 / command 异步+Shell、高级组（状态信息/超时默认 60/自定义 JSON 对象校验，解析错与对象错分开提示，非法禁存）；空可选字段省键、类型切换摘除不适用键、编辑经 spread 保留 id/location/enabled；删除两步确认走整表 saveHooks，保存失败保留表单可重试，成功经 loadHooks 权威回读后关闭；操作行 Wrap 布局修复确认删除态 22px 溢出。client_settings 28/28、全量 600/600、analyze 0、smoke 通过；阶段 `v13-hooks-form`（APK 67a24f6b…）双端同哈希。
+- **F3.2 最终恢复复验（2026-09-12）**：最终代码双端 `.qa` 冷重启阅读恢复 seed/verify 通过（row 450/offset -84，2 页分页，无 conversation command），证据 `build/artifacts/f3.2-final-*-2026-09-12.log`。
+- **Command Center 首版**：顶栏 shell 支持官方四 tab 命令面板和 `Ctrl+K`；覆盖 `>`/`#`/`@` 前缀、最近任务、最近文件、新任务、打开工作区、设置、侧栏/终端与添加终端标签；tab 图标和任务相对时间按官方面板对齐。
+- **Git 分支只读入口**：顶栏 `GitBranchChip` 仅 Git 仓库显示 branch/dirty/ahead/behind；纯 Dart `GitClient` 只调用 `git.refresh`，失败保留旧值。
+- **消息操作行**：用户消息显示 Copy + Edit（entityId 门控），Edit 填充 Composer 可直接修改重发；最新完成助手正文显示 Copy/Fork，Fork 处理 accepted/duplicate、失败、迟到响应和新会话切换；远控下 Feedback 可见性以官方 kX 行为为准（后扩展为可见的 Like/Dislike）。
+- **队列编辑与重排**：待发队列支持编辑文本（editQueueItem）和上移/下移（reorderQueueItem），均受 canEditQueue + dispatch.state==queued 门控。
+- **工具卡增强**：展开态显示输出截断指示、文件路径芯片和 URL 芯片；思考行流式状态显示单行截断预览。
+- **远控设置导航框架**：设置中心添加 modelProvider/plugins/skills/mcp/hooks/usage 占位节，远端 RPC 接入后填充。
+- **远控设置只读读取**：新增 `RemoteSettingsController` 读取 `setting/get`，按设备 + 工作区隔离并保护迟到响应；设置中心先填充 modelProvider 与 hooks 当前值，错误可重试，plugins 接入现有隔离插件管理，skills 只读读取 `skills/list`，MCP 只读读取 workspace server statuses。真实远端写入仍未授权。
+- **Subagents/Commands 目录**：按官方 `subagentsService.list` / `commandsService.list` 新增设置目录，覆盖加载、空态、失败重试、迟到响应和设备/工作区隔离；命令启停按官方 `setCommandEnabled(command)` 实现，成功后回读，失败保留原值。
+- **账户菜单扩展**：添加 Usage/Upgrade（需账户）/Login（未认证）/Logout（已认证）入口。
+- **升级套餐只读页**：Upgrade 菜单读取当前 coding-plan family 与官方套餐价格、权益，支持加载、空数据、错误重试；购买提交暂未接线。
+- **账户变更缓存保护**：补齐账户变更后额度、来源与引用候选缓存统一失效的本地回归。
+- **交互重连保护**：同任务重建订阅后，旧控制器迟到响应不再移除或污染新的交互请求。
+- **Hook 审查横幅刷新修复**：本地忽略 Hook 审查请求后横幅立即消失，并补 UI 回归。
+- **Hook admission 数据源**：按官方 snapshot 字段显示“N 个工作区 Hook 待审核”，去审核打开 Hooks 设置并主动拉取审查内容；忽略按会话和 bundle 隔离。
+- **后台任务取消**：运行中的 Bash/子智能体按官方 `backgroundWorks` 显示和取消，携带 workId、可取消门控、在飞去重与失败恢复。
+- **官方视觉配对素材恢复取证**：远控官方连接重新可用，官方会话/账户菜单/用量/设置页面按 1180 宽截图留证，最终配对随 G 阶段构建执行。
+- **模型供应商只读目录**：设置中心模型设置节新增官方 model-provider 目录只读展示（供应商与模型行、上下文窗口、推理级别），失败可重试且密钥不外显。
+- **模型行编辑**：供应商目录支持添加、编辑、删除模型；保存走官方整包 provider save，成功后权威回读，失败保留旧目录且密钥不外显。
+- **自定义供应商删除**：官方 `model-provider` delete 仅开放给自定义供应商；确认后删除、权威回读并刷新 Composer prepared options，失败保留旧目录且不外显密钥。
+- **自定义供应商新建**：官方 custom endpoint 表单支持名称/Base URL/API Key/API 格式和初始模型；失败保留表单可重试，成功权威回读并刷新 Composer prepared options。
+- **供应商展示顺序**：读取官方 providerIds 顺序并支持上移/下移；保存失败回滚，成功权威回读并刷新 Composer prepared options。
+- **Skill 工具行官方形态**：技能调用行显示官方 `skill.name`/`qualifiedName` 与 sparkles 图标，与官方工具卡一致。
+- **后台任务与协调器工具行**：TaskOutput/BashOutput 等显示官方 taskId 标识，协调器响应行按官方消息形态渲染。
+- **助手消息反馈**：最新完成回复支持 Like/Dislike（乐观更新、再点清除、失败回滚），与官方远控行为一致。
+- **套餐来源边界**：无有效订阅的团队产品不再回退到个人余额或猜测团队额度，来源状态明确不可用。
+- **双远端恢复隔离**：相同工作区和任务 ID 下，一端重连只处理本端状态，不再影响另一端草稿和配置。
+- **附件条状态回归**：覆盖附件上传进度、失败重试入口、文件大小展示和文本预览弹窗。
+- **上下文来源排序**：补齐来源条同量时的官方顺序和未知来源末位排序回归。
+- **工具详情状态回归**：覆盖截断输出、多条文件路径/链接 chip 与 URL fragment 保留。
+- **文件审查错误恢复**：修复展开失败 future 未消费的问题，错误状态和重试后恢复差分已回归覆盖。
+- **语音按钮状态刷新**：修复语音输入准备、录音、识别和错误状态不随控制器变化的问题。
+- **升级页状态回归**：补齐 Upgrade 只读页加载中、空套餐和无购买入口的渲染验证。
+- **账户变更统计保护**：确认账户变更后用量统计缓存也会清空并重新读取。
+- **更新下载器**：`UpdateDownloader` 支持下载进度、取消、自动重试和 MD5 校验；设置页接入下载按钮和进度条。
+- **语音模型目录迁移**：从旧 Zemote 迁移 6 模型目录（SenseVoice/Zipformer/FireRed/Whisper/Qwen3-ASR/FunASR）和事件通知。
+- **离线语音推理联测**：`.qa` 使用 16 kHz mono PCM16 已知音频验证 Whisper Tiny 离线识别输出；该证据区分模型推理链路与后续真实麦克风链路验收。
 - **套餐额度重置入口**：新增可用次数、过期倒计时、独立的 5 小时/周额度重置弹窗；请求去重、失败沿用请求标识、已受理但未确认时只查询状态，确认服务端新记录后刷新额度。真实账户只读核查，消耗流程使用合成传输与独立 Android QA 应用验证。
 - **长历史阅读恢复**：冷启动按保存的消息 ID 逐页恢复历史，再定位对应消息和可见偏移；加载失败可重试或回到最新，历史已变化/位置已消失时显示明确提示。布局支持未构建的变高消息定位，以及不同宽度和大字号下的恢复。
 - **草稿与导航持久恢复**：Android 将文本、原子引用、附件元数据、配置草稿、任务位置和面板/阅读状态加密保存，并保留上一个有效快照；重启不自动发送，等待回执期间中断会保留核对历史提示。
@@ -53,6 +197,11 @@
 - **lucide 图标补齐**：arrow-left / folder / folder-open / alert-triangle（官方 lucide 路径数据）。
 
 ### Fixed
+- **工作面板页序**：修复任务状态与终端在 `IndexedStack` 中下标反向的问题；窄屏覆盖面板恢复/切换后显示与所选页一致。
+- **用量页整页几何**：大标题与“应用用量 / 个人套餐”进入同一内容行，移除 AppBar 重复标题；1180 宽对照确认两 tab 内容宽均为 832。
+- **附件条官方形态**：附件卡对齐 48px 官方高度、36px thumbnail、名称/尺寸/状态布局；失败状态携带错误详情并提供红色重试。
+- **发送后附件呈现**：用户消息在气泡上方显示官方式媒体缩略和文件 pill；媒体按附件读取接口渲染，不再发送后消失。
+- **侧栏选中任务行密度**：按官方远控行为修正 selected 状态——选中行保持标题与时间的只读密度，归档/置顶操作只在 hover 或归档确认时出现；已用 ROG-STRIX 同任务官方成对截图回归。
 - **已打开菜单的主题和键盘避让**：菜单在系统主题、字号或键盘尺寸变化后重新读取当前颜色与安全区域；兼顾 Scaffold 已消费的键盘 inset，保留来源字体，不再停留在打开时的旧底色和位置。
 - **上下文与额度精度**：按官方紧凑数字规则显示总容量、占用比例和缓存命中率；来源色段只占已用容量，缺少分项时仍显示总占用条；MCP 独立显示日期与额度，修正零/越界时间戳。
 - **旧格式团队套餐**：先按已订阅产品或已验证快照解析组织和项目，再查询同一来源额度；来源切换立即移除旧展示，重连清除旧账户缓存。

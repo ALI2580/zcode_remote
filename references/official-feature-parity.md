@@ -73,3 +73,63 @@
 ## 2026-09-09 使用统计阶段
 
 Composer 更多已迁移为真实使用统计页。Pqt/fJt 的应用 all 与 7d/30d分离，Fqt/SJt 的套餐 provider/org/project/range/timeZone 隔离，EJt/iJt 的 52 周三模式、DJt 三系列选择与积分门控、jJt 固定 7 天健康度均有实现。原生 More 进入/返回共享状态时序缺陷已修复；最终截图/APK 证据继续见 v2-statistics-acceptance-2026-09-09.md。C2 自动维护与 E1/E2 设置容器/账户入口仍为待完成，不以本阶段替代。
+
+## 2026-09-12 设置中心逐节对齐（V1.3 第四~六批）
+
+以官方 1180 宽深色中文取证与落盘 js-1 为依据，设置中心按官方目录逐节对齐：
+
+- 常规：官方四卡结构（界面语言+徽章/终端/HTTP 代理/行为/归档）；11+5 个
+  settingService 远端字段（terminalInheritSystemProfile、terminalFontFamily、
+  integratedTerminalShell（win32 门控+system.listIntegratedTerminalShells）、
+  nativeSearchEnhancementsEnabled、httpProxy/httpProxyNoProxy/httpProxyCaCertPath、
+  toolGrouping 三键）按官方默认值与单键 update 语义实现；官方目录无
+  「对话」节，行为开关并入常规。
+- 记忆：工作区记忆卡片 + 虚线桌面端提示卡（官方取证文案）。
+- 索引库：官方「代码库」组与官方标签/描述；快照开关保留多键 patch。
+- 浏览器控制：开启开关经 pluginManagement 驱动 browser-use 官方插件；
+  「允许不安全证书」按官方 isDesktop 门控移出远控 UI；导入/清除待
+  platform 服务 wire 取证。
+- 子智能体/命令/技能/MCP：官方 chrome 骨架（作用域 pill+计数+搜索+
+  已安装 N+刷新+虚线空态卡）；命令启停（setCommandEnabled）与列表读取
+  为已验证链路；「新建」「继承默认」、技能「新建/导入」、MCP 启停无
+  验证 wire 不实现。
+- 插件：内联已安装插件行（setPluginEnabled 已验证链路）+ 管理入口；
+  官方页三 tab 结构与宿主分组待正式 tab 化时对齐。
+
+证据：build/visual-audit/takeover-2026-09-12/v1.3-general-batch4-2026-09-12.md、
+v1.3-settings-batch5-2026-09-12.md、v1.3-settings-batch6-2026-09-12.md。
+官方成对逐像素对照仍待 ROG-STRIX 桌面端远控会话恢复。
+
+## 2026-09-12 设置中心对齐续（batch9~batch14）
+
+- 常规 locale 全量校对（batch9）：从落盘 IntlProvider 中文块逐键校对——
+  交互行为下拉改「队列/引导」、九组开关标签对齐（提问自动继续/完整保留
+  模型 I/O/显示思考过程/显示待办/分组探索工具/分组终端命令/分组文件更改/
+  自动归档旧任务/归档保留时长）并补官方描述行、HTTP 代理三输入官方全文。
+- 子智能体节官方分组（batch10）：`$5`/`YJt` 判定重建内置/插件/已安装
+  三分组、工具 badge（全部工具/N 个工具）、计数语义修正。
+- 命令文件 CRUD（batch12）：官方远控命令页有新建入口且
+  writeCommandFile/updateCommandFile/deleteCommandFile wire 在 js-1 明文
+  （config={name,prompt,description?,argumentHint?}、user 作用域无
+  workspacePath、成功 list 权威回读、重名错误识别、name 1-50
+  `[a-zA-Z0-9_-]`）；本地三写方法+官方校验表单+两步删除。
+- 账户菜单（e21-disconnect）：官方远控菜单无登录入口（截图证实）；
+  「断开连接」=官方 logout 文案，落地真实断开会话行为。
+- 模型设置双栏（batch13/14）：官方双栏结构（左供应商列表分组+状态点+
+  选中态+添加供应商；右详情名称+已启用 badge+连接方式+套餐摘要卡+
+  模型列表）；套餐摘要卡复用 E2.1 只读 getEnterprisePricing
+  （subscribed 产品标题+升级入口+权益），续费/到期日期与解绑等字段的
+  官方 locale 键已取证（settings.modelProvider.codingPlan.renewsAt/
+  expiresAt/manage/unlink 组件 yHt：renew 优先于 expire，与 C2.4 一致），
+  数据绑定（provider 行或 subscription 对象的字段来源）待继续取证。
+
+证据：v1.3-locale-batch9、v1.3-subagents-batch10、e21-disconnect-menu、
+e1.2-commands-crud-wire、v1.3-provider-twopane、v1.3-provider-plan
+（均在 build/visual-audit/takeover-2026-09-12/）。
+
+## 2026-09-12 设置中心对齐续二（batch15~batch19）
+
+- batch15/16：命令文件 CRUD（createCommand/updateCommand/deleteCommand，writeCommandFile wire）+ CommandFormDialog（校验/两步删除/读回关闭）。
+- batch17：钩子节官方 chrome 与空态（hooks importHook wire 未捕获，不发明）。
+- batch18：插件节官方 chrome+空态+setPluginEnabled 行卡；MCP 节 stdio/启停 wire 未捕获记录不实现；官方三 tab 聚合 vs 本地侧栏结构差异记录。
+- batch19：五节空态统一为官方「居中标题+描述+按钮于整行宽虚线卡内」组合；chrome 新建钮移刷新右侧改实心；命令计数/文案对齐；钩子「以在任务」错字修正；浏览器注释卡左对齐。新增浏览器数据按钮平台门控取证（k 门控、web stub、toast/telemetry），本地隐藏分支语义一致。编号截图 indexing2/skills2/commands2 证实误标（同一张使用统计图），权威以命名截图为准。

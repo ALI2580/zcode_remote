@@ -35,6 +35,7 @@ class ConversationTransport {
   bool _handshaken = false;
   Future<void>? _handshakeFuture;
   int _handshakeGeneration = 0;
+  late final ValueSignal<int> _recoverySignal;
 
   /// From the server hello — required for attachment uploads.
   String? connectionId;
@@ -50,7 +51,8 @@ class ConversationTransport {
   }) {
     // A reopened bridge has no handshake state — start over (mirrors the
     // web client's `wD` cache being per service instance).
-    session.recovered.addListener(_onBridgeRecovered);
+    _recoverySignal = session.recoveryStarting;
+    _recoverySignal.addListener(_onBridgeRecovered);
   }
 
   void _onBridgeRecovered() {
@@ -90,6 +92,9 @@ class ConversationTransport {
           'clientId': clientId,
           'clientKind': 'mobileApp',
           'appVersion': appVersion,
+          // Official web declares this capability (gb()); servers may gate
+          // workspace hook review payloads on it.
+          'capabilities': {'workspaceHookReviewUi': true},
         },
       ]);
       checkCurrent();
@@ -152,6 +157,32 @@ class ConversationTransport {
   /// Live subscriptions by sessionId — source of the current
   /// revision/logEpoch for CAS commands.
   final _subscriptions = <String, ConversationSubscription>{};
+  final _activeSubscriptions = <_SubscriptionBase>{};
+
+  /// subscriptionId 退订失败后按 topic 登记：agent 侧注册可能残留，导致
+  /// 同一连接再次订阅该会话时收不到 ack（表现为 subscribe 超时）。
+  /// 下次订阅同 topic 前先补发一次退订。
+  final _leakedSubscriptionIds = <String, String>{};
+
+  void _trackSubscription(_SubscriptionBase subscription) {
+    _activeSubscriptions.add(subscription);
+  }
+
+  void _untrackActiveSubscription(_SubscriptionBase subscription) {
+    _activeSubscriptions.remove(subscription);
+  }
+
+  /// A bridge is only healthy for UI/commands after every live subscription
+  /// has completed its post-recovery handshake and subscribe ack.
+  Future<void> waitForSubscriptionsHealthy(
+      {Duration timeout = const Duration(seconds: 45)}) {
+    final waits = [
+      for (final subscription
+          in List<_SubscriptionBase>.from(_activeSubscriptions))
+        subscription._waitForRecovery(),
+    ];
+    return Future.wait(waits).timeout(timeout);
+  }
 
   /// Highest revision seen from command acks (`revisionAtDecision`) —
   /// acks land before the follow-up `state.updated` frame, and the next
@@ -378,6 +409,11 @@ class ConversationTransport {
   Future<dynamic> pauseGoal(String sessionId) =>
       sendCommand(sessionId, 'pauseGoal', {});
 
+  /// Official v4-pane background-work cancellation. The work id comes from
+  /// `snapshot.backgroundWorks[]`, not from a task or terminal session id.
+  Future<dynamic> cancelBackgroundWork(String sessionId, String workId) =>
+      sendCommand(sessionId, 'cancelBackgroundWork', {'workId': workId});
+
   Future<dynamic> resumeGoal(String sessionId) =>
       sendCommand(sessionId, 'resumeGoal', {});
 
@@ -437,6 +473,11 @@ class ConversationTransport {
           String sessionId, String queueItemId, String newText) =>
       sendCommand(sessionId, 'editQueueItem',
           {'queueItemId': queueItemId, 'newText': newText});
+
+  Future<dynamic> reorderQueueItem(
+          String sessionId, String queueItemId, String? beforeQueueItemId) =>
+      sendCommand(sessionId, 'reorderQueueItem',
+          {'queueItemId': queueItemId, 'beforeQueueItemId': beforeQueueItemId});
 
   Future<dynamic> deleteQueueItem(String sessionId, String queueItemId) =>
       sendCommand(sessionId, 'deleteQueueItem', {'queueItemId': queueItemId});
@@ -674,6 +715,57 @@ class ConversationTransport {
         },
       });
 
+  /// Mirrors the official workspace-hook review commands. The review payload
+  /// is immutable; `respond...` must send the request identity fields with a
+  /// `trust_selected` decision.
+  Future<dynamic> respondWorkspaceHookReview(
+    String sessionId,
+    Map<String, dynamic> base,
+    List<String> reviewItemIds,
+  ) =>
+      sendCommand(sessionId, 'respondWorkspaceHookReview', {
+        ...base,
+        'decision': {
+          'action': 'trust_selected',
+          'reviewItemIds': List<String>.unmodifiable(reviewItemIds),
+        },
+      });
+
+  Future<dynamic> toggleWorkspaceHookReviewItem(
+    String sessionId,
+    Map<String, dynamic> base,
+    String reviewItemId,
+    bool enabled,
+  ) =>
+      sendCommand(sessionId, 'toggleWorkspaceHookReviewItem', {
+        ...base,
+        'reviewItemId': reviewItemId,
+        'enabled': enabled,
+      });
+
+  Future<dynamic> revokeWorkspaceHookTrust(
+    String sessionId,
+    Map<String, dynamic> base,
+    List<String> reviewItemIds,
+  ) =>
+      sendCommand(sessionId, 'revokeWorkspaceHookTrust', {
+        ...base,
+        'reviewItemIds': List<String>.unmodifiable(reviewItemIds),
+      });
+
+  Future<dynamic> requestWorkspaceHookReview(
+    String sessionId, {
+    String? remoteSessionId,
+    required String workspaceIdentity,
+    required String bundleDigest,
+  }) =>
+      sendCommand(sessionId, 'requestWorkspaceHookReview', {
+        'sessionId': sessionId,
+        if (remoteSessionId != null) 'remoteSessionId': remoteSessionId,
+        'workspaceIdentity': workspaceIdentity,
+        'bundleDigest': bundleDigest,
+      });
+
   Future<dynamic> rowsRange(
     String sessionId, {
     int? beforeRowId,
@@ -712,16 +804,70 @@ class ConversationTransport {
   Future<List<Map<String, dynamic>>> workspaceFiles() async {
     final root = scope['workspacePath'];
     if (root is! String || root.isEmpty) return const [];
+    return workspaceFilesForRoot(root);
+  }
+
+  Future<List<Map<String, dynamic>>> workspaceFilesForRoot(
+      String rootPath) async {
+    if (rootPath.isEmpty) return const [];
     final result = await _channels.call(
         Channels.file,
         'listWorkspaceFiles',
         [
-          {'rootPath': root}
+          {'rootPath': rootPath}
         ],
         timeout: const Duration(seconds: 20));
-    return result is List
-        ? result.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList()
+    final raw = result is Map
+        ? result['items'] ?? result['files'] ?? result['entries']
+        : result;
+    return raw is List
+        ? raw.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList()
         : const [];
+  }
+
+  Future<TextFileReadResult> readTextFile(String path,
+      {int offset = 0, int length = 200000}) async {
+    final result = await _channels.call(
+        Channels.file,
+        'readTextFile',
+        [
+          {'path': path, 'offset': offset, 'length': length}
+        ],
+        timeout: const Duration(seconds: 20));
+    if (result is String) return TextFileReadResult(text: result);
+    if (result is Map) {
+      final text = result['text'] ?? result['content'] ?? result['data'];
+      return TextFileReadResult(
+          text: text is String ? text : null,
+          isBinary: result['isBinary'] == true,
+          truncated: result['truncated'] == true);
+    }
+    throw const FormatException('invalid fileService.readTextFile response');
+  }
+
+  /// Official window-controller search used by the sidebar command center.
+  /// The service accepts full workspace scopes so one request can search all
+  /// visible workspaces without locally filtering task previews.
+  Future<Map<String, dynamic>> listTaskList({
+    required List<Map<String, dynamic>> workspaceScopes,
+    String? search,
+    int limit = 80,
+  }) async {
+    final request = <String, dynamic>{
+      'kind': 'active',
+      'workspaceScopes': workspaceScopes,
+      'sortBy': 'updated',
+      'limit': limit,
+      if (search != null && search.trim().isNotEmpty) 'search': search.trim(),
+    };
+    final result = await _channels.call(
+        Channels.windowController, 'listTaskList', [request],
+        timeout: const Duration(seconds: 20));
+    if (result is Map && result['items'] is List) {
+      return result.cast<String, dynamic>();
+    }
+    if (result is List) return {'items': result};
+    throw const FormatException('invalid window-controller task list response');
   }
 
   Future<List<Map<String, dynamic>>> skillReferences(String? sessionId) async {
@@ -762,6 +908,9 @@ class ConversationTransport {
   }
 
   /// Official yC/O2e: only retain the non-secret family selection fields.
+  /// The provider summary mirrors the official sidebar usage candidate input
+  /// (`wB` reads `modelProviders` entries by id with `systemDisabledReason`
+  /// and a key-presence check); API key material never leaves this layer.
   Future<Map<String, dynamic>> providerFamilySelection() async {
     final result = await _channels.call(Channels.setting, 'get', const [],
         timeout: const Duration(seconds: 20));
@@ -775,6 +924,19 @@ class ConversationTransport {
       ])
         if (result[key] is Map)
           key: Map<String, dynamic>.from(result[key] as Map),
+      if (result['modelProviders'] is List)
+        'modelProviders': [
+          for (final entry
+              in (result['modelProviders'] as List).whereType<Map>())
+            {
+              'id': '${entry['id'] ?? ''}',
+              'enabled': entry['enabled'] != false,
+              'hasApiKey':
+                  entry['apiKey'] is String && (entry['apiKey'] as String).trim().isNotEmpty,
+              if (entry['systemDisabledReason'] is String)
+                'systemDisabledReason': entry['systemDisabledReason'],
+            },
+        ],
     };
   }
 
@@ -934,6 +1096,15 @@ class ConversationTransport {
   }
 }
 
+class TextFileReadResult {
+  const TextFileReadResult(
+      {this.text, this.isBinary = false, this.truncated = false});
+
+  final String? text;
+  final bool isBinary;
+  final bool truncated;
+}
+
 /// Lenient decoder for `fileService.readdir` responses whose exact shape is
 /// not fully mapped yet: accept a bare list or a map with `entries`/
 /// `children`/`files`.
@@ -962,14 +1133,22 @@ abstract class _SubscriptionBase<T extends ProtocolNotifier> {
   void Function()? _cancelFrameListener;
   bool _disposed = false;
   bool _resyncing = false;
+  int _lifecycleGeneration = 0;
   Timer? _resubscribeTimer;
+  Future<void>? _recoveryFuture;
+  late final ValueSignal<int> _recoverySignal;
+  Completer<void>? _recoverySync;
+  final _disposedSignal = Completer<void>();
+  bool _waitingForRecoverySync = false;
 
   final _stagedFrames = <Map<String, dynamic>>[];
   final _fragments = <String, _LogicalFrameAssembly>{};
   Timer? _fragmentCleanup;
 
   _SubscriptionBase(this._transport, this.state, this._logTag) {
-    _transport.session.recovered.addListener(_onBridgeRecovered);
+    _transport._trackSubscription(this);
+    _recoverySignal = _transport.session.recoveryStarting;
+    _recoverySignal.addListener(_onBridgeRecovered);
     _fragmentCleanup =
         Timer.periodic(const Duration(seconds: 30), (_) => _purgeFragments());
   }
@@ -1032,14 +1211,44 @@ abstract class _SubscriptionBase<T extends ProtocolNotifier> {
   }
 
   Future<void> _start() async {
+    final generation = ++_lifecycleGeneration;
+    void ensureCurrent() {
+      if (_disposed || generation != _lifecycleGeneration) {
+        throw StateError('subscription start superseded');
+      }
+    }
+
+    void Function()? cancel;
     try {
       await _transport.handshake();
-      _cancelFrameListener = _transport._channels.addEventListener(
+      ensureCurrent();
+      cancel = _transport._channels.addEventListener(
         ConversationTransport.channel,
         _frameEventName,
         _handleWireFrame,
         arg: _transport.scope,
       );
+      _cancelFrameListener = cancel;
+      // 之前退订失败留下的注册会挡住本次订阅 ack，先补发一次退订（尽力而为）。
+      final leakedId = _transport._leakedSubscriptionIds.remove(topic);
+      if (leakedId != null) {
+        _transport._log(
+            '[$_logTag] resending leaked unsubscribe for $topic id=$leakedId');
+        try {
+          await _transport._channels.call(
+            ConversationTransport.channel,
+            _unsubscribeMethod,
+            [
+              {..._transport.scope, 'subscriptionId': leakedId, ..._unsubscribeArgs},
+            ],
+            timeout: const Duration(seconds: 10),
+          );
+        } catch (error) {
+          _transport._leakedSubscriptionIds[topic] = leakedId;
+          _transport._log(
+              '[$_logTag] leaked unsubscribe retry failed for $topic: $error');
+        }
+      }
       final res = await _transport._channels.call(
         ConversationTransport.channel,
         _subscribeMethod,
@@ -1051,12 +1260,15 @@ abstract class _SubscriptionBase<T extends ProtocolNotifier> {
         // 30s channel default.
         timeout: const Duration(seconds: 60),
       );
+      ensureCurrent();
       final ack = (res as Map?)?['ack'] as Map?;
-      _subscriptionId = ack?['subscriptionId'] as String?;
-      _transport._log('[$_logTag] subscribed $topic id=$_subscriptionId');
-      if (_subscriptionId == null) {
+      final nextId = ack?['subscriptionId'] as String?;
+      _transport._log('[$_logTag] subscribed $topic id=$nextId');
+      if (nextId == null) {
         throw StateError('$_subscribeMethod: missing ack.subscriptionId');
       }
+      ensureCurrent();
+      _subscriptionId = nextId;
       _onSubscribeAck(ack?.cast<String, dynamic>() ?? const {});
       final staged = List<Map<String, dynamic>>.from(_stagedFrames);
       _stagedFrames.clear();
@@ -1065,11 +1277,13 @@ abstract class _SubscriptionBase<T extends ProtocolNotifier> {
       }
       _onStarted();
     } catch (_) {
-      _cancelFrameListener?.call();
-      _cancelFrameListener = null;
-      _subscriptionId = null;
-      _stagedFrames.clear();
-      _fragments.clear();
+      cancel?.call();
+      if (identical(_cancelFrameListener, cancel)) {
+        _cancelFrameListener = null;
+        _subscriptionId = null;
+        _stagedFrames.clear();
+        _fragments.clear();
+      }
       rethrow;
     }
   }
@@ -1077,7 +1291,56 @@ abstract class _SubscriptionBase<T extends ProtocolNotifier> {
   void _onBridgeRecovered() {
     if (_disposed) return;
     _transport._log('[$_logTag] bridge recovered, resubscribing $topic');
-    _resubscribe();
+    _lifecycleGeneration++;
+    _recoveryRequested = true;
+    _recoveryOldSubscriptionId ??= _subscriptionId;
+    _waitingForRecoverySync = true;
+    _recoverySync ??= Completer<void>();
+    // Frames from the dead bridge must not update the old projection while a
+    // fresh subscription is being established.
+    _subscriptionId = null;
+    _recoveryFuture ??= _resubscribeUntilReady().whenComplete(() {
+      _recoveryFuture = null;
+    });
+  }
+
+  bool _recoveryRequested = false;
+  String? _recoveryOldSubscriptionId;
+
+  Future<void> _waitForRecovery() async {
+    if (_disposed) return;
+    await Future.any<void>([
+      _recoveryFuture ?? Future<void>.value(),
+      _disposedSignal.future,
+    ]);
+    if (_disposed) return;
+    final sync = _recoverySync;
+    if (_waitingForRecoverySync && sync != null) {
+      await sync.future.timeout(const Duration(seconds: 45));
+    }
+  }
+
+  void _markRecoverySynchronized() {
+    if (!_waitingForRecoverySync) return;
+    _waitingForRecoverySync = false;
+    final sync = _recoverySync;
+    _recoverySync = null;
+    if (sync != null && !sync.isCompleted) sync.complete();
+  }
+
+  Future<void> _resubscribeUntilReady() async {
+    while (!_disposed && _recoveryRequested) {
+      try {
+        await _resubscribe();
+      } catch (e) {
+        _transport._log('[$_logTag] resubscribe failed: $e');
+      }
+      if (_disposed || _subscriptionId != null) {
+        _recoveryRequested = false;
+        return;
+      }
+      await Future<void>.delayed(const Duration(seconds: 3));
+    }
   }
 
   Future<void> _resubscribe() async {
@@ -1085,7 +1348,8 @@ abstract class _SubscriptionBase<T extends ProtocolNotifier> {
     _onResubscribeCleanup();
     _cancelFrameListener?.call();
     _cancelFrameListener = null;
-    final oldId = _subscriptionId;
+    final oldId = _recoveryOldSubscriptionId ?? _subscriptionId;
+    _recoveryOldSubscriptionId = null;
     _subscriptionId = null;
     _stagedFrames.clear();
     _fragments.clear();
@@ -1104,10 +1368,7 @@ abstract class _SubscriptionBase<T extends ProtocolNotifier> {
       await _start();
     } catch (e) {
       _transport._log('[$_logTag] resubscribe failed: $e');
-      _resubscribeTimer?.cancel();
-      _resubscribeTimer = Timer(const Duration(seconds: 3), () {
-        if (!_disposed && _subscriptionId == null) _resubscribe();
-      });
+      rethrow;
     }
   }
 
@@ -1199,11 +1460,22 @@ abstract class _SubscriptionBase<T extends ProtocolNotifier> {
   }
 
   Future<void> dispose() async {
+    if (_disposed) return;
     _disposed = true;
+    _disposedSignal.complete();
+    _transport._untrackActiveSubscription(this);
+    final sync = _recoverySync;
+    if (sync != null && !sync.isCompleted) {
+      // This subscription is no longer required by the active workspace.
+      // Release its recovery wait without an unobserved async error.
+      sync.complete();
+    }
+    _recoverySync = null;
+    _waitingForRecoverySync = false;
     _resubscribeTimer?.cancel();
     _fragmentCleanup?.cancel();
     await _onDispose();
-    _transport.session.recovered.removeListener(_onBridgeRecovered);
+    _recoverySignal.removeListener(_onBridgeRecovered);
     _cancelFrameListener?.call();
     final id = _subscriptionId;
     if (id != null) {
@@ -1215,7 +1487,14 @@ abstract class _SubscriptionBase<T extends ProtocolNotifier> {
             {..._transport.scope, 'subscriptionId': id, ..._unsubscribeArgs},
           ],
         );
-      } catch (_) {}
+        _transport._leakedSubscriptionIds.remove(topic);
+      } catch (error) {
+        // 退订失败不能静默丢弃：登记泄漏的 id，下一次订阅该 topic 前补发退订，
+        // 否则 agent 侧残留注册会让重复订阅永远等不到 ack。
+        _transport._leakedSubscriptionIds[topic] = id;
+        _transport._log(
+            '[$_logTag] unsubscribe failed for $topic id=$id: $error');
+      }
     }
     _fragments.clear();
   }
@@ -1279,8 +1558,22 @@ class ConversationSubscription extends _SubscriptionBase<ConversationState> {
   void _acceptLogicalFrame(Map<String, dynamic> frame) {
     final subId = subscriptionId;
     if (subId == null || frame['subscriptionId'] != subId) return;
+    final payload = frame['payload'];
+    if (payload is Map && payload['kind'] == 'snapshot') {
+      final snapshot = payload['snapshot'];
+      final epoch = snapshot is Map ? snapshot['logEpoch'] : null;
+      if (_waitingForRecoverySync &&
+          (epoch is! String ||
+              (state.logEpoch != null && epoch != state.logEpoch))) {
+        return;
+      }
+    }
     _lastFrameAt = DateTime.now();
-    state.applyFrame(frame, onGap: _resync);
+    if (payload is Map && state.applyFrame(frame, onGap: _resync)) {
+      if (payload['kind'] == 'snapshot') {
+        _markRecoverySynchronized();
+      }
+    }
   }
 
   void _startWatchdog() {
@@ -1475,13 +1768,14 @@ class SessionsIndexState extends ProtocolNotifier {
     return values;
   }
 
-  void applyFrame(Map<String, dynamic> frame,
+  bool applyFrame(Map<String, dynamic> frame,
       {required void Function() onGap}) {
     final payload = frame['payload'];
-    if (payload is! Map) return;
+    if (payload is! Map) return false;
     final toSeq = (frame['toSeq'] as num?)?.toInt() ?? seq;
 
     if (payload['kind'] == 'snapshot') {
+      if (payload['snapshot'] is! Map) return false;
       final snap = (payload['snapshot'] as Map).cast<String, dynamic>();
       workspaceId = snap['workspaceId'] as String?;
       logEpoch = snap['logEpoch'] as String?;
@@ -1500,7 +1794,7 @@ class SessionsIndexState extends ProtocolNotifier {
       final fromSeq = (frame['fromSeq'] as num?)?.toInt() ?? seq;
       if (fromSeq != seq) {
         onGap();
-        return;
+        return false;
       }
       final deltas = payload['deltas'];
       if (deltas is List) {
@@ -1516,9 +1810,12 @@ class SessionsIndexState extends ProtocolNotifier {
         }
       }
       seq = toSeq;
+    } else {
+      return false;
     }
     ready = true;
     notifyListeners();
+    return true;
   }
 }
 
@@ -1552,6 +1849,13 @@ class SessionsIndexSubscription extends _SubscriptionBase<SessionsIndexState> {
   String? get _resyncEpoch => state.logEpoch;
 
   @override
+  void _onSubscribeAck(Map<String, dynamic> ack) {
+    if (ack['logEpoch'] is String) {
+      state.logEpoch = ack['logEpoch'] as String;
+    }
+  }
+
+  @override
   Future<void> _onDispose() async {
     state.dispose();
   }
@@ -1560,7 +1864,21 @@ class SessionsIndexSubscription extends _SubscriptionBase<SessionsIndexState> {
   void _acceptLogicalFrame(Map<String, dynamic> frame) {
     final subId = subscriptionId;
     if (subId == null || frame['subscriptionId'] != subId) return;
-    state.applyFrame(frame, onGap: _resync);
+    final payload = frame['payload'];
+    if (payload is Map && payload['kind'] == 'snapshot') {
+      final snapshot = payload['snapshot'];
+      final epoch = snapshot is Map ? snapshot['logEpoch'] : null;
+      if (_waitingForRecoverySync &&
+          (epoch is! String ||
+              (state.logEpoch != null && epoch != state.logEpoch))) {
+        return;
+      }
+    }
+    if (payload is Map && state.applyFrame(frame, onGap: _resync)) {
+      if (payload['kind'] == 'snapshot') {
+        _markRecoverySynchronized();
+      }
+    }
   }
 }
 
@@ -1578,22 +1896,23 @@ class ConversationState extends ProtocolNotifier {
   bool ready = false;
   bool historyExhausted = false;
 
-  void applyFrame(
+  bool applyFrame(
     Map<String, dynamic> frame, {
     required void Function() onGap,
   }) {
     final payload = frame['payload'];
-    if (payload is! Map) return;
+    if (payload is! Map) return false;
     final toSeq = (frame['toSeq'] as num?)?.toInt() ?? seq;
 
     if (payload['kind'] == 'snapshot') {
+      if (payload['snapshot'] is! Map) return false;
       final snap = (payload['snapshot'] as Map).cast<String, dynamic>();
       _applySnapshot(snap, toSeq);
     } else if (payload['kind'] == 'deltas') {
       final fromSeq = (frame['fromSeq'] as num?)?.toInt() ?? seq;
       if (fromSeq != seq) {
         onGap();
-        return;
+        return false;
       }
       final deltas = payload['deltas'];
       if (deltas is List) {
@@ -1602,9 +1921,12 @@ class ConversationState extends ProtocolNotifier {
         }
       }
       seq = toSeq;
+    } else {
+      return false;
     }
     ready = true;
     notifyListeners();
+    return true;
   }
 
   void _applySnapshot(Map<String, dynamic> snap, int toSeq) {
@@ -1724,6 +2046,16 @@ class ConversationState extends ProtocolNotifier {
   void optimisticPatch(Map<String, dynamic> patch) {
     if (snapshot == null) return;
     snapshot = {...snapshot!, ...patch};
+    notifyListeners();
+  }
+
+  /// Optimistically removes an interaction after its command ack. The next
+  /// authoritative snapshot/state patch may still restore or remove entries;
+  /// this method never invents a replacement request.
+  void removePendingInteraction(String interactionId) {
+    snapshot?['pendingInteractions'] = pendingInteractions
+        .where((item) => '${item['interactionId'] ?? ''}' != interactionId)
+        .toList();
     notifyListeners();
   }
 
@@ -1897,6 +2229,14 @@ class ConversationState extends ProtocolNotifier {
 
   Map<String, dynamic>? get plan =>
       (snapshot?['plan'] as Map?)?.cast<String, dynamic>();
+
+  /// Official snapshot schema `zl`: {pendingCount, bundleDigest,
+  /// workspaceIdentity?}. This is the admission banner's independent source;
+  /// it is not the full `pendingInteractions` review payload.
+  Map<String, dynamic>? get workspaceHookAdmission {
+    final raw = snapshot?['workspaceHookAdmission'];
+    return raw is Map ? raw.cast<String, dynamic>() : null;
+  }
 
   /// inputRouting: {mode: startNow|enqueue|guide|reject|choice, reasonCode?}
   String get inputRoutingMode =>

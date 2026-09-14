@@ -41,6 +41,7 @@ class ContextUsageInfo {
       return null;
     }
     final sources = <String, double>{};
+    final firstSeen = <String, int>{};
     if (raw['breakdown'] case final List entries) {
       for (final entry in entries.whereType<Map>()) {
         final source = entry['source'], chars = entry['chars'];
@@ -49,11 +50,15 @@ class ContextUsageInfo {
             chars is num &&
             chars.isFinite &&
             chars > 0) {
+          firstSeen.putIfAbsent(source, () => firstSeen.length);
           sources.update(source, (n) => n + chars,
               ifAbsent: () => chars.toDouble());
         }
       }
     }
+    // Official AZe(): chars desc, then the fixed AI order; unknown sources
+    // yield NaN in the comparator, so V8 keeps their wire arrival order.
+    // Dart sort is not stable, so unknown sources tie-break by first-seen.
     int rank(String source) =>
         _sources.contains(source) ? _sources.indexOf(source) : _sources.length;
     final entries = sources.entries.toList()
@@ -61,7 +66,8 @@ class ContextUsageInfo {
         final size = b.value.compareTo(a.value);
         if (size != 0) return size;
         final order = rank(a.key).compareTo(rank(b.key));
-        return order != 0 ? order : a.key.compareTo(b.key);
+        if (order != 0) return order;
+        return firstSeen[a.key]!.compareTo(firstSeen[b.key]!);
       });
     final cache = raw['cache'];
     final rate = cache is Map ? cache['hitRate'] : null;
@@ -87,7 +93,8 @@ class _ContextUsageButtonState extends State<ContextUsageButton> {
     try {
       widget.controller.usage
           .refresh()
-          .then((_) => widget.controller.usage.refreshResetStatus());
+          .then((_) => widget.controller.usage.refreshResetStatus())
+          .catchError((Object _) {});
       final more = await showComposerPopover<bool>(context,
           width: 320,
           maxHeight: 520,

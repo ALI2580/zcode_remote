@@ -1,5 +1,28 @@
 // OFFICIALLY EXTRACTED lucide icon path data (zcode.z.ai remote v4 bundle,
 // 2026-09-07). Rendered via LucideIcon (stroke 2, round caps, 24x24 grid).
+// The U16 entries appended from upstream are pinned to Lucide 0.468.0 at
+// commit f12b0de177fbc2a6795e99be065887e72b237123. They are separate from the
+// 2026-09-07 zcode.z.ai bundle extraction; their raw SVGs and full license are
+// retained in build/visual-audit/ui-global-20260912-resume/
+// u16-settings-shell-visual/upstream/.
+//
+// ISC License
+//
+// Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as
+// part of Feather (MIT). All other copyright (c) for Lucide are held by
+// Lucide Contributors 2022.
+//
+// Permission to use, copy, modify, and/or distribute this software for any
+// purpose with or without fee is hereby granted, provided that the above
+// copyright notice and this permission notice appear in all copies.
+//
+// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
+// IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 // Regenerate with the bundle dig script when the official build changes.
 // IGNORE_SIZE lint is fine — no widgets here.
 import 'package:flutter/material.dart';
@@ -176,6 +199,33 @@ const Map<String, LucideIconData> kOfficialIcons = {
     LucideShape('p', ['M12 13V7']),
     LucideShape('p', ['M9 17h6']),
   ]),
+  "file": LucideIconData("file", [
+    LucideShape('p', [
+      'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'
+    ]),
+  ]),
+  "file-text": LucideIconData("file-text", [
+    LucideShape('p', [
+      'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'
+    ]),
+    LucideShape('p', ['M10 9H8']),
+    LucideShape('p', ['M16 13H8']),
+    LucideShape('p', ['M16 17H8']),
+  ]),
+  "file-code": LucideIconData("file-code", [
+    LucideShape('p', [
+      'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'
+    ]),
+    LucideShape('p', ['M10 12 8 14l2 2']),
+    LucideShape('p', ['M14 16l2-2-2-2']),
+  ]),
+  "file-image": LucideIconData("file-image", [
+    LucideShape('p', [
+      'M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z'
+    ]),
+    LucideShape('c', ['10', '12', '2', 'false']),
+    LucideShape('p', ['m20 17-1.3-1.3a2.4 2.4 0 0 0-3.4 0L9 22']),
+  ]),
   "list-todo": LucideIconData("list-todo", [
     LucideShape('p', ['M13 5h8']),
     LucideShape('p', ['M13 12h8']),
@@ -226,6 +276,28 @@ const Map<String, LucideIconData> kOfficialIcons = {
   "x": LucideIconData("x", [
     LucideShape('p', ['M18 6 6 18']),
     LucideShape('p', ['m6 6 12 12']),
+  ]),
+  "unplug": LucideIconData("unplug", [
+    LucideShape('p', ['m19 5 3-3']),
+    LucideShape('p', ['m2 22 3-3']),
+    LucideShape('p', [
+      'M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z'
+    ]),
+    LucideShape('p', ['M7.5 13.5 10 11']),
+    LucideShape('p', ['M10.5 16.5 13 14']),
+    LucideShape('p', [
+      'm12 6 6 6 2.3-2.3a2.4 2.4 0 0 0 0-3.4l-2.6-2.6a2.4 2.4 0 0 0-3.4 0Z'
+    ]),
+  ]),
+  "rocket": LucideIconData("rocket", [
+    LucideShape('p', [
+      'M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z'
+    ]),
+    LucideShape('p', [
+      'm12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z'
+    ]),
+    LucideShape('p', ['M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0']),
+    LucideShape('p', ['M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5']),
   ]),
   "sparkles": LucideIconData("sparkles", [
     LucideShape('p', [
@@ -355,6 +427,126 @@ const Map<String, LucideIconData> kOfficialIcons = {
     ]),
     LucideShape('p', ['M12 9v4']),
     LucideShape('p', ['M12 17h.01']),
+  ]),
+  // U16 Settings and Hooks icons extracted from the frozen official 3.11.2
+  // bundle. The path data uses the same 24px Lucide viewBox as the entries
+  // above; only the local name map was missing these components.
+  "pencil": LucideIconData("pencil", [
+    LucideShape('p', [
+      'M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z'
+    ]),
+    LucideShape('p', ['m15 5 4 4']),
+  ]),
+  "settings-2": LucideIconData("settings-2", [
+    LucideShape('p', ['M14 17H5']),
+    LucideShape('p', ['M19 7h-9']),
+    LucideShape('c', ['17', '17', '3', 'false']),
+    LucideShape('c', ['7', '7', '3', 'false']),
+  ]),
+  "chevron-left": LucideIconData("chevron-left", [
+    LucideShape('p', ['m15 18-6-6 6-6']),
+  ]),
+  "download": LucideIconData("download", [
+    LucideShape('p', ['M12 15V3']),
+    LucideShape('p', ['M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4']),
+    LucideShape('p', ['m7 10 5 5 5-5']),
+  ]),
+  "plug": LucideIconData("plug", [
+    LucideShape('p', ['M12 22v-5']),
+    LucideShape('p', ['M15 8V2']),
+    LucideShape('p', [
+      'M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z'
+    ]),
+    LucideShape('p', ['M9 8V2']),
+  ]),
+  "eye-off": LucideIconData("eye-off", [
+    LucideShape('p', [
+      'M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49'
+    ]),
+    LucideShape('p', ['M14.084 14.158a3 3 0 0 1-4.242-4.242']),
+    LucideShape('p', [
+      'M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143'
+    ]),
+    LucideShape('p', ['m2 2 20 20']),
+  ]),
+  "eye": LucideIconData("eye", [
+    LucideShape('p', [
+      'M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0'
+    ]),
+    LucideShape('c', ['12', '12', '3', 'false']),
+  ]),
+  "undo-2": LucideIconData("undo-2", [
+    LucideShape('p', ['M9 14 4 9l5-5']),
+    LucideShape(
+        'p', ['M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11']),
+  ]),
+  "server": LucideIconData("server", [
+    LucideShape('r', ['2', '2', '20', '8', '2']),
+    LucideShape('r', ['2', '14', '20', '8', '2']),
+    LucideShape('l', ['6', '6', '6.01', '6']),
+    LucideShape('l', ['6', '18', '6.01', '18']),
+  ]),
+  "anchor": LucideIconData("anchor", [
+    LucideShape('p', ['M12 6v16']),
+    LucideShape('p', ['m19 13 2-1a9 9 0 0 1-18 0l2 1']),
+    LucideShape('p', ['M9 11h6']),
+    LucideShape('c', ['12', '4', '2', 'false']),
+  ]),
+  // These names are sourced from the pinned upstream Lucide 0.468.0 SVG
+  // assets; the captured web bundle did not include their lazy modules.
+  "box": LucideIconData("box", [
+    LucideShape('p', [
+      'M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z'
+    ]),
+    LucideShape('p', ['m3.3 7 8.7 5 8.7-5']),
+    LucideShape('p', ['M12 22V12']),
+  ]),
+  "cpu": LucideIconData("cpu", [
+    LucideShape('r', ['4', '4', '16', '16', '2']),
+    LucideShape('r', ['9', '9', '6', '6', '1']),
+    LucideShape('p', ['M15 2v2']),
+    LucideShape('p', ['M15 20v2']),
+    LucideShape('p', ['M2 15h2']),
+    LucideShape('p', ['M2 9h2']),
+    LucideShape('p', ['M20 15h2']),
+    LucideShape('p', ['M20 9h2']),
+    LucideShape('p', ['M9 2v2']),
+    LucideShape('p', ['M9 20v2']),
+  ]),
+  "graduation-cap": LucideIconData("graduation-cap", [
+    LucideShape('p', [
+      'M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z'
+    ]),
+    LucideShape('p', ['M22 10v6']),
+    LucideShape('p', ['M6 12.5V16a6 3 0 0 0 12 0v-3.5']),
+  ]),
+  "database": LucideIconData("database", [
+    LucideShape('p', ['M3 5a9 3 0 1 0 18 0a9 3 0 1 0-18 0']),
+    LucideShape('p', ['M3 5V19A9 3 0 0 0 21 19V5']),
+    LucideShape('p', ['M3 12A9 3 0 0 0 21 12']),
+  ]),
+  "bar-chart-3": LucideIconData("bar-chart-3", [
+    LucideShape('p', ['M3 3v16a2 2 0 0 0 2 2h16']),
+    LucideShape('p', ['M18 17V9']),
+    LucideShape('p', ['M13 17V5']),
+    LucideShape('p', ['M8 17v-3']),
+  ]),
+  "history": LucideIconData("history", [
+    LucideShape('p', ['M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8']),
+    LucideShape('p', ['M3 3v5h5']),
+    LucideShape('p', ['M12 7v5l4 2']),
+  ]),
+  "layers-2": LucideIconData("layers-2", [
+    LucideShape('p', [
+      'm16.02 12 5.48 3.13a1 1 0 0 1 0 1.74L13 21.74a2 2 0 0 1-2 0l-8.5-4.87a1 1 0 0 1 0-1.74L7.98 12'
+    ]),
+    LucideShape('p', [
+      'M13 13.74a2 2 0 0 1-2 0L2.5 8.87a1 1 0 0 1 0-1.74L11 2.26a2 2 0 0 1 2 0l8.5 4.87a1 1 0 0 1 0 1.74Z'
+    ]),
+  ]),
+  "message": LucideIconData("message", [
+    LucideShape(
+        'p', ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z']),
   ]),
 };
 

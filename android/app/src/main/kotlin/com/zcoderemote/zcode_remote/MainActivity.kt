@@ -31,6 +31,7 @@ class MainActivity : FlutterActivity() {
     private var permissionResult: MethodChannel.Result? = null
     private val permissionCode = 4096
     private var attachmentPicker: AttachmentPicker? = null
+    private var captchaChallenge: CaptchaChallengeHelper? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -42,9 +43,33 @@ class MainActivity : FlutterActivity() {
                     (packageName.endsWith(".dev") || packageName.endsWith(".qa")) &&
                         intent?.getBooleanExtra("quotaReadOnlyAudit", false) == true
                 )
+                "installApk" -> {
+                    val path = call.argument<String>("path") ?: ""
+                    result.success(installApk(path))
+                }
+                "voiceModelsRoot" -> result.success(
+                    (getExternalFilesDir(null) ?: filesDir).absolutePath
+                )
+                "openExternalUrl" -> {
+                    val value = call.argument<String>("url") ?: ""
+                    val uri = try { Uri.parse(value) } catch (_: Exception) { null }
+                    val scheme = uri?.scheme?.lowercase()
+                    if (uri == null || uri.host.isNullOrBlank() ||
+                        (scheme != "http" && scheme != "https")) {
+                        result.error("invalid_url", "Only an http(s) URL can be opened", null)
+                    } else {
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, uri))
+                            result.success(true)
+                        } catch (_: Exception) {
+                            result.error("external_browser_unavailable", "No external browser is available", null)
+                        }
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
+        captchaChallenge = CaptchaChallengeHelper(this, messenger)
         attachmentPicker = AttachmentPicker(this, messenger)
         notifications = MethodChannel(messenger, "zcode_remote/notifications").also { channel ->
             channel.setMethodCallHandler { call, result ->
@@ -162,6 +187,22 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) { null }
     }
 
+    private fun installApk(path: String): Boolean {
+        val file = java.io.File(path)
+        if (!file.exists() || !file.name.endsWith(".apk")) return false
+        return try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                this, "$packageName.fileprovider", file)
+            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            true
+        } catch (_: Exception) { false }
+    }
+
     private fun requestNotificationPermission(result: MethodChannel.Result) {
         if (hasNotificationPermission()) {
             TaskNotificationEvents.setDismissed(this, false)
@@ -216,6 +257,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        captchaChallenge?.dispose()
+        captchaChallenge = null
         attachmentPicker?.dispose()
         if (isFinishing) stopService(Intent(this, TaskProgressService::class.java))
         TaskNotificationEvents.listener = null

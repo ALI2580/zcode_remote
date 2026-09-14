@@ -64,7 +64,7 @@ class RelayClient {
   WebSocketChannel? _socket;
   StreamSubscription? _socketSub;
   int _socketGeneration = 0;
-  bool _connectInFlight = false;
+  int? _connectInFlightGeneration;
 
   final _state = ValueSignal<RelayState>(RelayState.idle);
   ProtocolValueListenable<RelayState> get stateListenable => _state;
@@ -97,6 +97,14 @@ class RelayClient {
 
   RelayClient(this.params, {this.onLog});
 
+  /// True after an explicit local close. A locally closed relay must stay
+  /// closed until the caller deliberately starts it again.
+  bool get intentionallyClosed => _intentionallyClosed;
+
+  /// Whether this relay has completed pairing at least once in its current
+  /// lifetime. This is useful to distinguish first connection from recovery.
+  bool get wasPaired => _wasPaired;
+
   void _log(String line) => onLog?.call(line);
 
   void _setState(RelayState s) {
@@ -114,9 +122,9 @@ class RelayClient {
   }
 
   Future<void> _connect() async {
-    if (_connectInFlight || _disposed) return;
-    _connectInFlight = true;
+    if (_connectInFlightGeneration != null || _disposed) return;
     final generation = ++_socketGeneration;
+    _connectInFlightGeneration = generation;
     await _socketSub?.cancel();
     _socketSub = null;
     _socket?.sink.close();
@@ -130,21 +138,20 @@ class RelayClient {
       socket = WebSocketChannel.connect(uri);
       await socket.ready;
     } catch (e) {
-      _connectInFlight = false;
+      if (_connectInFlightGeneration == generation) {
+        _connectInFlightGeneration = null;
+      }
       _log('[relay] connect failed: $e');
       if (generation == _socketGeneration) {
         _handleSocketClosed(1006, e.toString(), generation: generation);
       }
       return;
     }
-    if (_disposed) {
+    if (_disposed || generation != _socketGeneration) {
       socket.sink.close();
-      _connectInFlight = false;
-      return;
-    }
-    if (generation != _socketGeneration) {
-      socket.sink.close();
-      _connectInFlight = false;
+      if (_connectInFlightGeneration == generation) {
+        _connectInFlightGeneration = null;
+      }
       return;
     }
     _socket = socket;
@@ -155,7 +162,9 @@ class RelayClient {
           socket.closeCode ?? 1006, socket.closeReason,
           generation: generation),
     );
-    _connectInFlight = false;
+    if (_connectInFlightGeneration == generation) {
+      _connectInFlightGeneration = null;
+    }
     _setState(RelayState.authenticating);
     _send({
       'type': 'auth_init',
@@ -306,6 +315,40 @@ class RelayClient {
 
   void _handleRelayError(String? code, String? message) {
     _log('[relay] error frame: $code $message');
+    // The desktop treats these as terminal authentication/parameter errors.
+    // Do not feed them into the reconnect loop: retrying the same credentials
+    // only obscures the actionable "pair again" state in the UI.
+    if (code == 'AUTH_FAILED' || code == 'WRONG_PARAM') {
+      _socketGeneration++;
+      _intentionallyClosed = true;
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _clearWaitingTimer();
+      _stopHeartbeat();
+      _setState(RelayState.error);
+      _failureController.add(RelayFailure(
+        'invalid-mobile-connection',
+        code == 'AUTH_FAILED'
+            ? 'The saved pairing is no longer valid.'
+            : 'The saved pairing parameters are no longer valid.',
+      ));
+      try {
+        _socket?.sink.close();
+      } catch (_) {}
+      return;
+    }
+    // DEVICE_OFFLINE is a recoverable remote-side interruption when a pairing
+    // already existed. Keep the same unbounded reconnect contract as socket
+    // close and expose a classified reason to the state/UI layer.
+    if (code == 'DEVICE_OFFLINE') {
+      _failureController.add(const RelayFailure('desktop-disconnected'));
+      if (_wasPaired) {
+        _scheduleReconnect();
+      } else {
+        _setState(RelayState.error);
+      }
+      return;
+    }
     if (code == 'KICKED') {
       final detail = (message ?? '').toLowerCase();
       final transient = detail.contains('conflict') ||
@@ -320,9 +363,23 @@ class RelayClient {
         return;
       }
       _setState(RelayState.kicked);
+      _socketGeneration++;
       _intentionallyClosed = true;
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _clearWaitingTimer();
+      _stopHeartbeat();
       _failureController.add(RelayFailure('kicked', message));
       _socket?.sink.close();
+      return;
+    }
+    if (code != null) {
+      _failureController.add(RelayFailure('relay-error'));
+      if (_wasPaired) {
+        _scheduleReconnect();
+      } else {
+        _setState(RelayState.error);
+      }
     }
   }
 
@@ -334,6 +391,23 @@ class RelayClient {
     final mapped = relayCloseReason(code);
     _log('[relay] closed code=$code reason=$reason mapped=$mapped');
     if (_intentionallyClosed) return;
+    // These close codes mean that the stored pairing cannot be used. They
+    // require an explicit re-pair/retry action and must not auto-revive.
+    if (mapped == 'session-not-found' ||
+        mapped == 'session-expired' ||
+        mapped == 'invalid-mobile-connection') {
+      final terminalReason = mapped!;
+      _setState(RelayState.error);
+      _intentionallyClosed = true;
+      _failureController.add(RelayFailure(
+        terminalReason,
+        reason == null || reason.isEmpty ? 'Pairing is no longer valid.' : null,
+      ));
+      return;
+    }
+    if (mapped != null) {
+      _failureController.add(RelayFailure(mapped, reason));
+    }
     if (_wasPaired || mapped == 'desktop-disconnected') {
       _scheduleReconnect();
       return;
@@ -432,13 +506,41 @@ class RelayClient {
   }
 
   Future<void> _reconnect() async {
-    if (_disposed || _intentionallyClosed || _connectInFlight) return;
+    if (_disposed ||
+        _intentionallyClosed ||
+        _connectInFlightGeneration != null) {
+      return;
+    }
     _reconnectTimer?.cancel();
     // Go through `reconnecting` so listeners (bridge recovery) know the
     // connection dropped — the heartbeat-timeout path used to skip this and
     // bridges were never recovered after re-pairing.
     _setState(RelayState.reconnecting);
     await _connect();
+  }
+
+  /// Stop automatic recovery without disposing the relay object. The device
+  /// session keeps its cached workspace/chat objects so the current page can
+  /// remain visible and the user can explicitly reconnect later.
+  Future<void> close({String reason = 'user-disconnected'}) async {
+    if (_disposed) return;
+    _socketGeneration++;
+    // Release only this attempt's in-flight guard. A late old socket callback
+    // compares its generation before it can touch a newer attempt.
+    _connectInFlightGeneration = null;
+    _intentionallyClosed = true;
+    _wasPaired = false;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _clearWaitingTimer();
+    _stopHeartbeat();
+    await _socketSub?.cancel();
+    _socketSub = null;
+    try {
+      await _socket?.sink.close(1000, reason);
+    } catch (_) {}
+    _socket = null;
+    _setState(RelayState.closed);
   }
 
   /// Diagnostics: forcefully drops the socket to exercise the
@@ -458,6 +560,7 @@ class RelayClient {
   Future<void> dispose() async {
     _disposed = true;
     _intentionallyClosed = true;
+    _connectInFlightGeneration = null;
     _stopHeartbeat();
     _clearWaitingTimer();
     _reconnectTimer?.cancel();

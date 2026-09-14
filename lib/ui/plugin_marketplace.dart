@@ -1,14 +1,35 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../state/client_preferences.dart';
 import '../state/plugin_catalog.dart';
 import 'official_icons.dart';
+import 'plugin_display_name.dart';
+import 'plugins_settings.dart';
+import 'settings_scope.dart';
 import 'theme.dart';
 
 class PluginMarketplace extends StatefulWidget {
-  const PluginMarketplace(
-      {super.key, required this.catalog, required this.onUse});
+  const PluginMarketplace({
+    super.key,
+    required this.catalog,
+    required this.onUse,
+    this.onUsePrompt,
+    this.scope,
+    this.onScopeChanged,
+    this.workspaceScopeOptions = const [],
+    this.selectedWorkspaceScope,
+    this.onWorkspaceScopeChanged,
+  });
   final PluginCatalog catalog;
   final ValueChanged<CatalogPlugin> onUse;
+  final FutureOr<void> Function(PluginUseDraft draft)? onUsePrompt;
+  final String? scope;
+  final ValueChanged<String>? onScopeChanged;
+  final List<SettingsScopeOption> workspaceScopeOptions;
+  final SettingsScopeOption? selectedWorkspaceScope;
+  final FutureOr<void> Function(SettingsScopeOption option)?
+      onWorkspaceScopeChanged;
   @override
   State<PluginMarketplace> createState() => _PluginMarketplaceState();
 }
@@ -16,14 +37,60 @@ class PluginMarketplace extends StatefulWidget {
 class _PluginMarketplaceState extends State<PluginMarketplace> {
   final _search = TextEditingController();
   bool _installedOnly = false;
+  late String _scope;
   @override
   void initState() {
     super.initState();
+    _scope = widget.scope ?? widget.catalog.effectiveScope;
     _search.addListener(_changed);
   }
 
   void _changed() {
     if (mounted) setState(() {});
+  }
+
+  void _use(CatalogPlugin item) {
+    final callback = widget.onUsePrompt;
+    if (callback != null) {
+      unawaited(Future<void>.sync(() => callback(buildPluginUseDraft(item,
+          locale: Localizations.localeOf(context), scope: _scope))));
+    } else {
+      widget.onUse(item);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant PluginMarketplace oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.scope != widget.scope && widget.scope != null) {
+      _scope = widget.scope!;
+    }
+  }
+
+  Widget _scopePicker() {
+    final values = <String>[
+      'user',
+      if (widget.catalog.hasWorkspace) 'workspace',
+    ];
+    return SegmentedButton<String>(
+      key: const ValueKey('plugin-market-scope'),
+      segments: [
+        for (final value in values)
+          ButtonSegment<String>(
+            value: value,
+            label: Text(value == 'workspace'
+                ? uiText(context, '工作区', 'Workspace')
+                : uiText(context, '用户', 'User')),
+          ),
+      ],
+      selected: {_scope},
+      onSelectionChanged: (selected) {
+        final value = selected.firstOrNull;
+        if (value == null || value == _scope) return;
+        setState(() => _scope = value);
+        widget.onScopeChanged?.call(value);
+      },
+    );
   }
 
   @override
@@ -37,7 +104,8 @@ class _PluginMarketplaceState extends State<PluginMarketplace> {
         context: context,
         builder: (context) => AlertDialog(
                 title: Text(uiText(context, '卸载插件', 'Uninstall plugin')),
-                content: Text(item.name),
+                content: Text(
+                    pluginDisplayName(item, Localizations.localeOf(context))),
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.pop(context, false),
@@ -125,7 +193,8 @@ class _PluginMarketplaceState extends State<PluginMarketplace> {
     await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
-                title: Text(item.name),
+                title: Text(
+                    pluginDisplayName(item, Localizations.localeOf(context))),
                 content: SizedBox(
                     width: 560,
                     child: FutureBuilder<Map<String, dynamic>>(
@@ -188,11 +257,13 @@ class _PluginMarketplaceState extends State<PluginMarketplace> {
         final items = catalog.items
             .where((e) =>
                 (!_installedOnly || e.installed) &&
-                '${e.name} ${e.description} ${e.marketplace}'
+                '${pluginDisplayName(e, Localizations.localeOf(context))} ${e.description} ${e.marketplace}'
                     .toLowerCase()
                     .contains(query))
             .toList()
-          ..sort((a, b) => a.name.compareTo(b.name));
+          ..sort((a, b) => pluginDisplayName(a, Localizations.localeOf(context))
+              .compareTo(
+                  pluginDisplayName(b, Localizations.localeOf(context))));
         final categories = <String>[
           'productivity',
           'developer-tools',
@@ -222,6 +293,16 @@ class _PluginMarketplaceState extends State<PluginMarketplace> {
                       runSpacing: 4,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
+                        if (widget.workspaceScopeOptions.length > 1 &&
+                            widget.onWorkspaceScopeChanged != null)
+                          SettingsScopePicker(
+                            options: widget.workspaceScopeOptions,
+                            selected: widget.selectedWorkspaceScope,
+                            onSelected: widget.onWorkspaceScopeChanged!,
+                          ),
+                        if (widget.catalog.hasWorkspace &&
+                            widget.onScopeChanged != null)
+                          _scopePicker(),
                         ChoiceChip(
                             label: Text(uiText(context, '全部插件', 'All plugins')),
                             selected: !_installedOnly,
@@ -308,7 +389,11 @@ class _PluginMarketplaceState extends State<PluginMarketplace> {
                                             crossAxisAlignment:
                                                 CrossAxisAlignment.start,
                                             children: [
-                                          Text(item.name,
+                                          Text(
+                                              pluginDisplayName(
+                                                  item,
+                                                  Localizations.localeOf(
+                                                      context)),
                                               maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
                                               style: TextStyle(
@@ -339,7 +424,7 @@ class _PluginMarketplaceState extends State<PluginMarketplace> {
                                               'Plugin actions'),
                                           onSelected: (action) {
                                             if (action == 'use') {
-                                              widget.onUse(item);
+                                              _use(item);
                                             }
                                             if (action == 'toggle') {
                                               catalog.enable(
@@ -349,8 +434,7 @@ class _PluginMarketplaceState extends State<PluginMarketplace> {
                                               _confirmUninstall(item);
                                             }
                                             if (action == 'update') {
-                                              catalog.mutate('updatePlugin',
-                                                  {'pluginId': item.id});
+                                              catalog.update(item);
                                             }
                                           },
                                           enabled: catalog.operation == null,

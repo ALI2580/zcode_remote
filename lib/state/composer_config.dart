@@ -1,4 +1,6 @@
 import '../protocol/conversation.dart';
+import '../protocol/entitlement.dart';
+import 'composer_model_projection.dart';
 
 // Official zI / HZe ordering; unknown server values retain their relative order.
 int? thoughtRank(String value) => switch (value.trim().toLowerCase()) {
@@ -66,27 +68,28 @@ List<String> sortedThoughtLevels(List<String> levels) {
         );
 }
 
-bool firstPartyProvider(String value) => const {
-      'glm',
-      'builtin:zai-start-plan',
-      'builtin:zai-coding-plan',
-      'builtin:zai',
-      'builtin:bigmodel-start-plan',
-      'builtin:bigmodel-coding-plan',
-      'builtin:bigmodel',
-    }.contains(value);
+bool firstPartyProvider(String value) =>
+    value == 'glm' || isFamilyProviderId(value);
 
-int providerPriority(String value) {
-  final index = const [
-    'builtin:zai-start-plan',
-    'builtin:zai-coding-plan',
-    'builtin:zai',
-    'builtin:bigmodel-start-plan',
-    'builtin:bigmodel-coding-plan',
-    'builtin:bigmodel',
-    'builtin:zapi'
-  ].indexOf(value);
-  return index < 0 ? 200 : index;
+int providerPriority(String value) => officialProviderPriority(value);
+
+String? _familyLabel(String providerId) {
+  if (providerId == 'builtin:zai' || providerId.startsWith('builtin:zai-')) {
+    return 'Z.ai';
+  }
+  if (providerId == 'builtin:bigmodel' ||
+      providerId.startsWith('builtin:bigmodel-')) {
+    return 'BigModel';
+  }
+  return null;
+}
+
+int _recommendedModelPriority(ConfigOptionValue option, String providerId) {
+  if (!providerId.endsWith('-start-plan')) return kRecommendedModels.length;
+  final model = modelReference(option.value).model.toLowerCase();
+  final index = kRecommendedModels
+      .indexWhere((candidate) => candidate.toLowerCase() == model);
+  return index < 0 ? kRecommendedModels.length : index;
 }
 
 class ComposerOptions {
@@ -111,11 +114,67 @@ class ComposerOptions {
         .toList();
     final order = {for (var i = 0; i < entries.length; i++) entries[i]: i};
     entries.sort((a, b) {
-      final result = providerPriority(provider(a))
-          .compareTo(providerPriority(provider(b)));
-      return result == 0 ? order[a]!.compareTo(order[b]!) : result;
+      final leftProvider = provider(a), rightProvider = provider(b);
+      final providerResult = providerPriority(leftProvider)
+          .compareTo(providerPriority(rightProvider));
+      if (providerResult != 0) return providerResult;
+      final leftRecommended = _recommendedModelPriority(a, leftProvider);
+      final rightRecommended = _recommendedModelPriority(b, rightProvider);
+      if (leftRecommended != rightRecommended) {
+        return leftRecommended.compareTo(rightRecommended);
+      }
+      return order[a]!.compareTo(order[b]!);
     });
     return entries;
+  }
+
+  /// Models grouped by the stable provider identity advertised on each
+  /// option. Display names are labels only; two providers with the same label
+  /// must remain separate groups.
+  List<ComposerModelGroup> get modelGroups {
+    return modelGroupsFor(null);
+  }
+
+  List<ComposerModelGroup> modelGroupsFor(
+      ComposerModelCatalogProjection? projection) {
+    final groups = <String, List<ConfigOptionValue>>{};
+    final order = <String>[];
+    for (final value in models) {
+      final id = provider(value);
+      if (!groups.containsKey(id)) {
+        groups[id] = <ConfigOptionValue>[];
+        order.add(id);
+      }
+      groups[id]!.add(value);
+    }
+    return [
+      for (final id in order)
+        () {
+          final metadata = projection?.provider(id);
+          final label = _familyLabel(id) ??
+              groups[id]!
+                  .map((value) => value.modelProviderName?.trim())
+                  .whereType<String>()
+                  .firstWhere((value) => value.isNotEmpty,
+                      orElse: () => metadata?.label ?? id);
+          final vision = <String>{};
+          for (final value in groups[id]!) {
+            final model = modelReference(value.value).model;
+            if (metadata?.supportsVision(model) == true ||
+                metadata?.supportsVision(value.name) == true) {
+              vision.add(value.value);
+            }
+          }
+          return ComposerModelGroup(
+            id: id,
+            label: label,
+            items: List<ConfigOptionValue>.unmodifiable(groups[id]!),
+            directItems: metadata?.directItems ?? _defaultDirectItems(id),
+            badgeLabel: metadata?.badgeLabel,
+            visionModelValues: Set<String>.unmodifiable(vision),
+          );
+        }(),
+    ];
   }
 
   String provider(ConfigOptionValue option) =>
@@ -130,8 +189,23 @@ class ComposerOptions {
   List<ConfigOptionValue> get modes =>
       option('mode')
           ?.options
-          .where(
-              (o) => const ['build', 'edit', 'plan', 'yolo'].contains(o.value))
+          .where((o) => const {
+                'default',
+                'build',
+                'plan',
+                'edit',
+                'yolo',
+                'auto',
+                'acceptEdits',
+                'agent',
+                'autoEdit',
+                'dontAsk',
+                'read-only',
+                'fullAccess',
+                'full-access',
+                'agent-full-access',
+                'bypassPermissions',
+              }.contains(o.value))
           .toList() ??
       [];
 
@@ -188,3 +262,24 @@ class ComposerOptions {
     return next;
   }
 }
+
+/// One provider section in the official model picker.
+class ComposerModelGroup {
+  const ComposerModelGroup({
+    required this.id,
+    required this.label,
+    required this.items,
+    this.directItems = false,
+    this.badgeLabel,
+    this.visionModelValues = const <String>{},
+  });
+
+  final String id;
+  final String label;
+  final List<ConfigOptionValue> items;
+  final bool directItems;
+  final String? badgeLabel;
+  final Set<String> visionModelValues;
+}
+
+bool _defaultDirectItems(String providerId) => isFamilyProviderId(providerId);

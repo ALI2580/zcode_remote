@@ -29,8 +29,11 @@
 - 区分拼音 composing、候选提交和真正的发送动作。未提交组合区不能触发引用选择或回车发送；某些桌面 IME 会先清 composing 再发确认 Enter，保留已有提交保护。
 - Android/iOS 的普通 Enter 应遵循当前输入配置换行，不照搬桌面发送快捷键。核对控制键组合、中文 `¥/￥` 技能触发及 UTF-16 范围，不按字符数随意切 token。
 - 引用标签和序列化值都要验证。删除/替换是原子引用行为，选择后恢复焦点；快速切换时不能接受旧来源候选。
-- 原生 IME 声称“已显示”不等于有键盘占用区。结合截图、实际焦点、IME 配置、viewInsets 和物理/逻辑尺寸判断；曾出现搜狗报告显示但没有有效占用区，不能当作中文软键盘已验收。
-- 修改 `show_ime_with_hard_keyboard` 或键盘模式前记录原值，结束恢复。实际组合输入在独立 QA 草稿上验证，不向真实任务发送测试文本。
+- 原生 IME 声称“已显示”不等于有键盘占用区。结合截图、实际焦点、IME 配置、viewInsets 和物理/逻辑尺寸判断；不能当作中文软键盘已验收。
+- 2026-09-09 定位上条根因：MuMu 镜像预装的搜狗锤子版（`com.sohu.inputmethod.sogou.chuizi`）在该镜像上软键盘视图为空——IMS 自报 `mIsInputViewShown=true`，但 IME 窗口 frame 为 0 高、SurfaceFlinger 无任何 buffer、无辅助功能节点；`show_ime_with_hard_keyboard=1` 与进程重启均无效，shell 无 root 不能修。ROM 会向 EditorInfo 注入 `nemu.vinput.editor.*` extras 且自带 vinput 输入法包已被移除。判定方法：`dumpsys window InputMethod` 的 `mFrame` 上下边相等即零高。
+- 解决：QA 双实例改用开源 Trime v3.3.12（`com.osfans.trime/.ime.core.TrimeInputMethodService`，朙月拼音）作为默认输入法，APK 存 `build/artifacts/trime-v3.3.12-x86_64.apk`。注意：Trime 安装/清数据后必须先启动一次它的主界面完成资产部署，否则弹键盘即崩（`No valid theme available`）；其候选条无法用 uiautomator 点选（IME 窗口不进语义树），用空格选字。Trime 候选顺序与官方搜狗不同，仅用于组合输入链路验收，不作同态对照。
+- Trime 默认键盘的 `@ / $` 是数字键长按候选，不是直接点击；候选条/二级候选同样不进 uiautomator 树，只能截图 OCR 或按截图坐标操作。长按 `2` 可选 `@`，长按 `4` 可选 `$`，但二级层操作要重新截图确认，不能沿用候选条坐标。
+- 修改 `show_ime_with_hard_keyboard` 或键盘模式前记录原值，结束恢复（当前两台均为 0，Trime 不依赖该设置）。实际组合输入在真实会话草稿上验证后必须退格清除，不发送测试文本。2026-09-09 已在 Trime 下通过：组合/候选/空格选字/组合态回车不误发/退格/焦点恢复，证据见 `build/visual-audit/recovery-qa/b1.1-ime-findings-2026-09-09.md`。
 
 入口：`test/state/composer_references_test.dart`、`test/ui/composer_features_test.dart`、`composer_ui_test.dart`；实际软键盘仍需原生步骤和截图。
 
@@ -68,6 +71,11 @@
 
 ## 视觉、主题与阅读
 
+- `find.text()` may still match a hidden `IndexedStack` child, so finder-only
+  assertions cannot prove which panel is painted. Assert the active
+  `IndexedStack.index`, then capture the real render for the user-visible state.
+  2026-09-12 this exposed a reversed summary/terminal index that looked green if
+  only hidden children were checked.
 - 弹窗打开后切主题/键盘时，路由内部重新订阅当前 Theme/MediaQuery；不能只捕获打开瞬间的值。Scaffold 可能消费 IME inset，覆盖层需读取正确的根路由安全区域。
 - 首次进入用量页若共享状态同步通知底层 Composer，可能触发构建期 setState；将初始化读取安排在首帧之后，并保留共享控制器回归。
 - 颜色按 CSS 真实混色空间核对；本项目涉及 Oklab，不随意改为 RGB 混色。
@@ -80,3 +88,54 @@
 - Python 输出中文时先 `sys.stdout.reconfigure(encoding='utf-8')`。控制台乱码不意味着原文件损坏。
 - 环境变量通常只属于当前 shell：每次原生 QA 显式设置包开关，产品构建显式移除。
 - 用 PowerShell 原生参数处理路径；删除/移动前验证绝对范围，不跨 shell 拼接命令。多行文本用文件或结构化参数，不把 JSON 转义当 shell 转义。
+
+## Slow-upload gates in native picker tests
+
+Symptom: an integration test intended to cancel a slow upload saw
+`uploads never reached the uploading phase`.
+
+Root cause: the test set the fake transport gate after waiting for
+picked attachments and calling `pumpAndSettle`. The same microtask queue
+completed the fast fake uploads before the gate existed.
+
+Fix: install the upload gate before the picker can deliver files. Then
+wait explicitly for `AttachmentPhase.uploading`, perform removal, and
+release the gate to verify the remaining entries.
+
+Boundary: applies to tests that must observe an in-flight state before
+the picker result starts work. A completed run through real
+DocumentsUI is not evidence that cancellation was exercised.
+
+## Trime symbol popups and atomic mention backspace
+
+Symptom: direct taps on Trime's top symbol row inserted nothing, and a
+backspace after `@file ` removed only the trailing space.
+
+Root cause: in the current Trime layout, `@`/`$` commit from the long-press
+popup row, not the base key. Meanwhile, `ComposerInput` treated the visible
+label and its trailing space as ordinary text for end-of-text deletion.
+
+Fix: long-press the symbol key, release/tap the symbol in the popup row. For
+the product state layer, detect a collapsed end-of-text backspace immediately
+after a mention and expand the deletion through the whole token.
+
+Boundary: record device, resolution, schema and keyboard layout before treating
+any Trime coordinates as reusable. This does not allow hard-keyboard `input
+text` as IME acceptance evidence.
+
+Entry: `integration_test/composer_reference_ime_test.dart`,
+`test/state/composer_references_test.dart`.
+
+## Landscape tablet splash guard
+
+On 2026-09-12 the landscape MuMu tablet showed a black splash although the Dart
+VM had started. Minimal first-frame and platform-channel probes both rendered,
+so this was stale instance/window state rather than an app-wide Android failure.
+After stopping the stale `.qa` Activity, reinstalling the stage APK, and cold
+starting `.dev`, the normal ROG workspace rendered and the installed
+`base.apk` hash matched.
+
+When a splash never hands over, compare a minimal target and the normal target on
+the same device; record `dumpsys window` frames and the splash surface. Do not
+turn a stale emulator transition into an app navigation fix, and do not use the
+black screenshot as visual-pass evidence.

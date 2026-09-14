@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zcode_remote/state/client_preferences.dart';
 import 'package:zcode_remote/state/composer_usage.dart';
+import 'package:zcode_remote/state/usage_plan_selection.dart';
 import 'package:zcode_remote/state/usage_statistics.dart';
 import 'package:zcode_remote/ui/app.dart';
 import 'package:zcode_remote/ui/usage/usage_page.dart';
@@ -61,8 +62,9 @@ void main() {
     addTearDown(tester.view.reset);
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
+    expect(tester.getSize(find.byType(Wrap).first).width, 832);
     expect(find.text('活跃度'), findsOneWidget);
-    await tester.tap(find.text('应用统计'));
+    await tester.tap(find.text('应用用量'));
     await tester.pumpAndSettle();
     expect(stats.app.snapshot!.range, '7d');
     expect(stats.lifetime.snapshot!.range, 'all');
@@ -86,6 +88,75 @@ void main() {
             .where((c) => c.method == 'requestCodingPlanResetOpportunity')
             .length,
         1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'plan identity and renewal date render with official renew-over-expire priority',
+      (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1180, 900);
+    addTearDown(tester.view.reset);
+    bridge.conversationTransport.quotaHandler =
+        (provider, organizationId, projectId) async => {
+              ...quotaFixture(provider),
+              'subscription': {
+                'details': [
+                  {
+                    'productName': 'GLM Pro 年付版',
+                    'expireTime': '2027-01-01T00:00:00Z',
+                    'renewTime': 1795000000000,
+                  },
+                ],
+              },
+            };
+    await usage.refresh(force: true);
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    expect(find.text('GLM Pro 年付版'), findsOneWidget);
+    expect(find.textContaining('续期'), findsOneWidget);
+    expect(find.textContaining('到期'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'expiry renders when renewal is missing and invalid dates render nothing',
+      (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1180, 900);
+    addTearDown(tester.view.reset);
+    bridge.conversationTransport.quotaHandler =
+        (provider, organizationId, projectId) async => {
+              ...quotaFixture(provider),
+              'subscription': {
+                'details': [
+                  {'expireTime': '2027-01-01T00:00:00Z'},
+                ],
+              },
+            };
+    await usage.refresh(force: true);
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    expect(find.textContaining('到期'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+
+    bridge.conversationTransport.quotaHandler =
+        (provider, organizationId, projectId) async => {
+              ...quotaFixture(provider),
+              'subscription': {
+                'details': [
+                  {'expireTime': 'abc', 'renewTime': '  '},
+                ],
+              },
+            };
+    await usage.refresh(force: true);
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    expect(find.textContaining('到期'), findsNothing);
+    expect(find.textContaining('续期'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
@@ -137,6 +208,7 @@ void main() {
       (result['detail']['model'] as Map)['cacheHitRate'] = 94;
       return result;
     };
+    await usage.refresh(force: true);
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
     final scroll = find
@@ -244,7 +316,7 @@ void main() {
             position.jumpTo(0);
             await tester.pumpAndSettle();
             await tester
-                .tap(find.text(language == 'zh' ? '应用统计' : 'Application'));
+                .tap(find.text(language == 'zh' ? '应用用量' : 'App usage'));
             await tester.pumpAndSettle();
             for (var i = 0; i < 6; i++) {
               await tester.drag(scroll, const Offset(0, -650));
@@ -259,5 +331,97 @@ void main() {
       }
     }
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'statistics page distinguishes candidate failure, unconfigured banner and source switch',
+      (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1180, 900);
+    addTearDown(tester.view.reset);
+    // (suite usage stays alive; tearDown disposes it)
+    bridge.channels.handler = null;
+    // Candidates: both coding-plan providers connected and keyed.
+    final planTransport = bridge.conversationTransport;
+    planTransport.families['modelProviders'] = [
+      {
+        'id': 'builtin:zai-coding-plan',
+        'enabled': true,
+        'hasApiKey': true,
+      },
+      {
+        'id': 'builtin:bigmodel-coding-plan',
+        'enabled': true,
+        'hasApiKey': true,
+      },
+    ];
+    planTransport.families['modelProviderFamilySelectedKeys'] = {
+      'bigmodel': 'coding-plan:builtin:bigmodel-coding-plan',
+      'zai': 'coding-plan:builtin:zai-coding-plan',
+    };
+    final selection = UsagePlanSelection(
+        usage: ComposerUsage(bridge.conversationTransport),
+        preferences: prefs);
+    addTearDown(selection.dispose);
+    await tester.pumpWidget(ZcodeRemoteApp(
+        preferences: prefs,
+        home: UsagePage(
+            usage: selection.usage,
+            statistics: stats,
+            planSelection: selection,
+            onConfigurePlans: () {})));
+    await tester.pumpAndSettle();
+    // Personal plan tab shows the source switch with both candidates.
+    expect(find.text('来源'), findsOneWidget);
+    expect(find.text('Z.ai'), findsWidgets);
+    expect(find.text('BigModel'), findsWidgets);
+
+    // A candidate read failure shows a retryable error, never "no plan".
+    planTransport.familyHandler = () async => throw StateError('down');
+    final failing = UsagePlanSelection(
+        usage: ComposerUsage(bridge.conversationTransport),
+        preferences: prefs);
+    addTearDown(failing.dispose);
+    await tester.pumpWidget(ZcodeRemoteApp(
+        preferences: prefs,
+        home: UsagePage(
+            usage: failing.usage,
+            statistics: stats,
+            planSelection: failing,
+            onConfigurePlans: () {})));
+    await tester.pumpAndSettle();
+    expect(find.text('无法读取编程套餐来源，请检查连接后重试。'), findsOneWidget);
+    expect(find.text('重试'), findsOneWidget);
+  });
+
+  testWidgets(
+      'unconfigured connection renders the official billing banner, not a fake empty plan',
+      (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1180, 900);
+    addTearDown(tester.view.reset);
+    // (suite usage stays alive; tearDown disposes it)
+    bridge.channels.handler = null;
+    final planTransport = bridge.conversationTransport;
+    // No modelProviders summary at all: nothing is connected.
+    planTransport.families.remove('modelProviders');
+    var configured = false;
+    final selection = UsagePlanSelection(
+        usage: ComposerUsage(bridge.conversationTransport),
+        preferences: prefs);
+    addTearDown(selection.dispose);
+    await tester.pumpWidget(ZcodeRemoteApp(
+        preferences: prefs,
+        home: UsagePage(
+            usage: selection.usage,
+            statistics: stats,
+            planSelection: selection,
+            onConfigurePlans: () => configured = true)));
+    await tester.pumpAndSettle();
+    expect(find.text('编程套餐'), findsOneWidget);
+    expect(find.text('去连接编程套餐'), findsOneWidget);
+    await tester.tap(find.text('去连接编程套餐'));
+    await tester.pumpAndSettle();
+    expect(configured, isTrue);
   });
 }

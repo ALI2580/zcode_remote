@@ -83,6 +83,31 @@ void main() {
         })!
             .cacheHitRate,
         .78);
+    final ordering = ContextUsageInfo.parse({
+      'contextWindow': {
+        'usedTokens': 100,
+        'maxTokens': 100,
+        'breakdown': [
+          {'source': 'unknown_source', 'chars': 10},
+          {'source': 'skills', 'chars': 20},
+          {'source': 'messages', 'chars': 20},
+        ],
+      }
+    })!;
+    expect(ordering.breakdown.keys, ['messages', 'skills', 'unknown_source']);
+    // Official AZe comparator yields NaN for unknown sources, so V8 keeps
+    // their wire arrival order; Dart sorts tie-break by first-seen instead.
+    final unknownOrder = ContextUsageInfo.parse({
+      'contextWindow': {
+        'usedTokens': 100,
+        'maxTokens': 100,
+        'breakdown': [
+          {'source': 'zeta_new', 'chars': 15},
+          {'source': 'alpha_new', 'chars': 15},
+        ],
+      }
+    })!;
+    expect(unknownOrder.breakdown.keys, ['zeta_new', 'alpha_new']);
   });
 
   test(
@@ -119,10 +144,62 @@ void main() {
     expect(ToolRowInfo.fromRow({'toolName': 'web_search'}).icon, 'earth');
   });
 
+  test(
+      'official Skill rows render skill.name with metadata qualifiedName fallback',
+      () {
+    final named = ToolRowInfo.fromRow({
+      'toolName': 'Skill',
+      'input': {
+        'skill': {'name': 'project-cognition'},
+        'args': 'check updates',
+      },
+      'skillMetadata': {'qualifiedName': 'zcode:project-cognition'},
+    });
+    expect(named.family, 'skill');
+    expect(named.icon, 'sparkles');
+    expect(named.title, 'project-cognition');
+
+    final metadataOnly = ToolRowInfo.fromRow({
+      'toolName': 'Skill',
+      'skillMetadata': {'qualifiedName': 'zcode:docx'},
+    });
+    expect(metadataOnly.title, 'zcode:docx');
+
+    final unknown = ToolRowInfo.fromRow({'toolName': 'Skill'});
+    expect(unknown.title, 'Skill');
+  });
+
+  test('official task-control and coordinator message rows keep task identity',
+      () {
+    final taskOutput = ToolRowInfo.fromRow({
+      'toolName': 'TaskOutput',
+      'input': {'task_id': 'bash_1'},
+    });
+    expect(taskOutput.family, 'taskControl');
+    expect(taskOutput.icon, 'terminal');
+    expect(taskOutput.title, 'bash_1');
+
+    final taskStop = ToolRowInfo.fromRow({
+      'toolName': 'BashOutput',
+      'inputText': '{"task_id":"bash_2","shell_id":"sh_9"}',
+    });
+    expect(taskStop.family, 'taskControl');
+    expect(taskStop.title, 'bash_2');
+
+    final coordinator = ToolRowInfo.fromRow({
+      'toolName': 'RespondToCoordinator',
+      'input': {'summary': 'Phase complete'},
+    });
+    expect(coordinator.family, 'message');
+    expect(coordinator.icon, 'message-circle-plus');
+    expect(coordinator.title, 'Phase complete');
+  });
+
   testWidgets(
       'reasoning fallback is complete and tool expansion preserves real fields',
       (tester) async {
-    await tester.pumpWidget(app(Column(children: [
+    await tester.pumpWidget(app(SingleChildScrollView(
+        child: Column(children: [
       const ReasoningRow(row: {'text': '分析内容', 'state': 'complete'}),
       const ReasoningRow(row: {'durationMs': 2400, 'state': 'complete'}),
       const ToolCallRow(row: {
@@ -138,7 +215,7 @@ void main() {
         'status': 'error',
         'error': {'code': 'test', 'message': 'Synthetic failure'}
       }),
-    ])));
+    ]))));
     await tester.pumpAndSettle();
     expect(find.text('思考 · 持续了几秒'), findsOneWidget);
     expect(find.text('思考 · 持续了 2 秒'), findsOneWidget);
@@ -147,12 +224,99 @@ void main() {
     expect(find.text('工具调用 · Unknown tool'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('tool-row-7')));
     await tester.pumpAndSettle();
+    expect(find.text('调用'), findsOneWidget);
+    expect(find.text('参数'), findsOneWidget);
     expect(find.text('Linux synthetic'), findsOneWidget);
     expect(find.textContaining('uname'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('tool-row-8')));
     await tester.pumpAndSettle();
     expect(find.text('Synthetic failure'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('file write rows show the official diff count badge',
+      (tester) async {
+    await tester.pumpWidget(app(Column(children: [
+      ToolCallRow(row: {
+        'rowId': 19,
+        'toolName': 'Write',
+        'status': 'success',
+        'output': {
+          'raw': {
+            'changes': [
+              {'path': 'lib/a.dart', 'additions': 2, 'deletions': 1},
+              {'path': 'lib/b.dart', 'additions': 3, 'deletions': 0},
+            ]
+          }
+        }
+      }),
+    ])));
+    await tester.pumpAndSettle();
+    expect(find.text('+5'), findsOneWidget);
+    expect(find.text('-1'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('large tool output previews first and expands on demand',
+      (tester) async {
+    final fullOutput = 'A' * 2400;
+    await tester.pumpWidget(app(Column(children: [
+      ToolCallRow(row: {
+        'rowId': 12,
+        'toolName': 'read',
+        'status': 'success',
+        'output': {'text': fullOutput}
+      }),
+    ])));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('tool-row-12')));
+    await tester.pumpAndSettle();
+    expect(find.text('展开大输出'), findsOneWidget);
+    expect(find.textContaining('A' * 100), findsOneWidget);
+    expect(find.textContaining('A' * 2400), findsNothing);
+    await tester.tap(find.text('展开大输出'));
+    await tester.pumpAndSettle();
+    expect(find.text('收起大输出'), findsOneWidget);
+    expect(find.textContaining('A' * 2400), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tool details expose truncated output, paths and URLs',
+      (tester) async {
+    await tester.pumpWidget(app(Column(children: [
+      ToolCallRow(row: {
+        'rowId': 21,
+        'toolName': 'Read',
+        'status': 'success',
+        'inputText': '{"file_path":"lib/a.dart","target_path":"lib/b.dart"}',
+        'output': {
+          'truncated': true,
+          'text': 'See https://example.com/a and https://example.com/a#frag',
+        },
+      }),
+    ])));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('tool-row-21')));
+    await tester.pumpAndSettle();
+    expect(find.text('输出已截断'), findsOneWidget);
+    expect(find.text('lib/a.dart'), findsOneWidget);
+    expect(find.text('lib/b.dart'), findsOneWidget);
+    expect(find.text('https://example.com/a'), findsOneWidget);
+    expect(find.text('https://example.com/a#frag'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('streaming reasoning shows thinking label and truncated preview',
+      (tester) async {
+    await tester.pumpWidget(app(const Column(children: [
+      ReasoningRow(row: {
+        'text': '这是一段正在流式输出的思考内容，应该在标题旁边显示截断预览。',
+        'state': 'streaming'
+      }),
+    ])));
+    await tester.pumpAndSettle();
+    expect(find.text('正在思考'), findsOneWidget);
+    // Preview text should be visible (truncated to 1 line)
+    expect(find.text('这是一段正在流式输出的思考内容，应该在标题旁边显示截断预览。'), findsOneWidget);
   });
 
   testWidgets(

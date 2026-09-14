@@ -147,11 +147,16 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('composer-model')));
     await tester.pumpAndSettle();
     expect(find.text('Provider B'), findsOneWidget);
+    await tester
+        .tap(find.byKey(const ValueKey('composer-model-provider-provider-b')));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Second model'));
     await tester.pumpAndSettle();
     expect(controller.config['model'], 'second-model');
     await tester.tap(find.byKey(const ValueKey('composer-mode')));
     await tester.pumpAndSettle();
+    // GLM family resolves from the exposed mode set; the official English
+    // label for glm.plan is "Plan mode" (mode.label.glm.plan).
     await tester.tap(find.text('Plan mode'));
     await tester.pumpAndSettle();
     expect(controller.config['mode'], 'plan');
@@ -272,6 +277,32 @@ void main() {
             .payload['expectedHeldQueueItemIds'],
         ['q1']);
     expect(controller.input.text, isEmpty);
+  });
+
+  testWidgets('queue edit restores the queued text into the composer',
+      (tester) async {
+    controller.state!.optimisticPatch({
+      'queue': {
+        'autoDrain': true,
+        'items': [
+          {
+            'queueItemId': 'q1',
+            'kind': 'sendText',
+            'text': 'queued text',
+            'dispatch': {'state': 'queued'}
+          }
+        ]
+      }
+    });
+    bridge.conversationTransport.commandHandler =
+        (sid, type, payload) async => {'status': 'accepted'};
+    await tester.pumpWidget(editor());
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Edit'));
+    await tester.pumpAndSettle();
+    expect(controller.input.text, 'queued text');
+    expect(
+        bridge.conversationTransport.commands.single.type, 'deleteQueueItem');
   });
 
   testWidgets(

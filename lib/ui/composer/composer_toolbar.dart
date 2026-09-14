@@ -9,6 +9,11 @@ import '../theme.dart';
 import 'composer_popover.dart';
 import 'context_usage.dart';
 import 'composer_actions.dart';
+import 'composer_menus.dart';
+import 'composer_mode_metadata.dart';
+
+export 'composer_mode_metadata.dart'
+    show modeDescription, modeIconForValue, modeLabel;
 
 class ComposerToolbar extends StatelessWidget {
   const ComposerToolbar(
@@ -17,7 +22,9 @@ class ComposerToolbar extends StatelessWidget {
       required this.onSend,
       this.containerWidth,
       this.onTrigger,
-      this.onAddAttachment});
+      this.onAddAttachment,
+      this.voiceInput,
+      this.onManageModels});
   final ComposerController controller;
   final VoidCallback onSend;
 
@@ -25,6 +32,8 @@ class ComposerToolbar extends StatelessWidget {
   final double? containerWidth;
   final ValueChanged<String>? onTrigger;
   final VoidCallback? onAddAttachment;
+  final Widget? voiceInput;
+  final VoidCallback? onManageModels;
 
   @override
   Widget build(BuildContext context) =>
@@ -52,16 +61,19 @@ class ComposerToolbar extends StatelessWidget {
                 !firstPartyProvider(config['provider'] as String? ?? '')
             ? '$provider/'
             : '';
-        final modeIcon = switch (config['mode']) {
-          'yolo' || 'fullAccess' || 'bypassPermissions' => 'shield-alert',
-          'plan' => 'notepad-text',
-          'edit' => 'shield-check',
-          _ => 'hand',
-        };
+        final modeIcon = modeIconForValue(config['mode'] as String?);
+        // Agent family from the exposed mode set (official FYe keys); the
+        // provider id stays a fallback for single-option menus.
+        final modeFamily = familyForModeValues(
+            [for (final o in options.modes) o.value]);
         return Row(
             key: ValueKey(
                 'composer-width-${queryWidth < 384 ? 'compact' : queryWidth < 576 ? 'medium' : queryWidth < 672 ? 'wide' : 'full'}'),
             children: [
+              if (voiceInput != null) ...[
+                voiceInput!,
+                const SizedBox(width: 4),
+              ],
               ComposerActions(
                   controller: controller,
                   onTrigger: onTrigger ?? controller.references.insertTrigger,
@@ -76,8 +88,12 @@ class ComposerToolbar extends StatelessWidget {
                               id: 'mode',
                               icon: modeIcon,
                               label: labelMode
-                                  ? modeLabel(context,
-                                      '${config['mode'] ?? ''}', mode?.name)
+                                  ? modeLabel(
+                                      context,
+                                      '${config['mode'] ?? ''}',
+                                      mode?.name,
+                                      config['provider'] as String?,
+                                      modeFamily)
                                   : null,
                               color: modeIcon == 'shield-alert'
                                   ? ZInk.of(Theme.of(context).colorScheme)
@@ -86,12 +102,13 @@ class ComposerToolbar extends StatelessWidget {
                               tooltip:
                                   uiText(context, '协作模式', 'Collaboration mode'),
                               onTap: controller.canConfigureMode
-                                  ? () => _choose(
-                                      anchor,
-                                      options.modes,
-                                      config['mode'] as String?,
-                                      controller.selectMode,
-                                      modes: true)
+                                  ? () async {
+                                      final picked = await showComposerModeMenu(
+                                          anchor, controller);
+                                      if (picked != null) {
+                                        await controller.selectMode(picked);
+                                      }
+                                    }
                                   : null,
                             ))),
               const SizedBox(width: 8),
@@ -113,9 +130,15 @@ class ComposerToolbar extends StatelessWidget {
                               pending: controller.configuring,
                               onTap: controller.canConfigureModel &&
                                       options.models.isNotEmpty
-                                  ? () => _choose(anchor, options.models,
-                                      model?.value, controller.selectModel,
-                                      providers: true)
+                                  ? () async {
+                                      final picked =
+                                          await showComposerModelMenu(
+                                              anchor, controller,
+                                              onManageModels: onManageModels);
+                                      if (picked != null) {
+                                        await controller.selectModel(picked);
+                                      }
+                                    }
                                   : null,
                             ))),
                 if (levels.isNotEmpty) ...[
@@ -137,7 +160,7 @@ class ComposerToolbar extends StatelessWidget {
                                     : null,
                                 onTap: controller.canConfigureModel &&
                                         levels.length > 1
-                                    ? () => _choose(
+                                    ? () => _chooseThought(
                                         anchor,
                                         [
                                           for (final value in levels)
@@ -158,88 +181,57 @@ class ComposerToolbar extends StatelessWidget {
             ]);
       });
 
-  Future<void> _choose(BuildContext context, List<ConfigOptionValue> values,
-      String? selected, Future<bool> Function(String) select,
-      {bool providers = false, bool modes = false}) async {
+  Future<void> _chooseThought(
+      BuildContext context,
+      List<ConfigOptionValue> values,
+      String? selected,
+      Future<bool> Function(String) select) async {
     final ink = ZInk.of(Theme.of(context).colorScheme);
-    final entries = <Widget>[];
-    String? previous;
-    for (final value in values) {
-      final provider = value.modelProviderName ??
-          value.modelProviderId ??
-          modelReference(value.value).provider;
-      if (providers && provider != previous) {
-        entries.add(Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
-            child: Text(provider,
-                style: TextStyle(color: ink.subtlest, fontSize: 12))));
-        previous = provider;
-      }
-      final name =
-          modes ? modeLabel(context, value.value, value.name) : value.name;
-      final description =
-          modes ? modeDescription(context, value) : value.description;
-      entries.add(Builder(
-          builder: (menuContext) => InkWell(
-              onTap: () => Navigator.pop(menuContext, value.value),
-              borderRadius: BorderRadius.circular(8),
-              child: Container(
-                  constraints: BoxConstraints(minHeight: modes ? 52 : 32),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  child: Row(children: [
-                    Expanded(
-                        child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                          Text(name,
-                              style: TextStyle(color: ink.text, fontSize: 14)),
-                          if (description?.isNotEmpty == true && !providers)
-                            Text(description!,
-                                style: TextStyle(
-                                    color: ink.subtlest, fontSize: 12)),
-                        ])),
-                    if (value.value == selected) ...[
-                      const SizedBox(width: 8),
-                      LucideIcon('check', size: 16, color: ink.subtlest)
-                    ],
-                  ])))));
-    }
-    final picked = await showComposerPopover<String>(context,
-        width: providers
-            ? 256
-            : modes
-                ? 256
-                : 160,
-        gap: providers ? 0 : 4,
-        child: Padding(
-            padding: const EdgeInsets.all(4),
-            child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: entries)));
+    final picked = await showComposerPopover<String>(
+      context,
+      width: 160,
+      gap: 4,
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) => Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final value in values)
+                InkWell(
+                  key: ValueKey('composer-thought-option-${value.value}'),
+                  onTap: controller.canConfigureModel
+                      ? () => Navigator.of(context).pop<String>(value.value)
+                      : null,
+                  borderRadius: BorderRadius.circular(8),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 32),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(value.name,
+                                style:
+                                    TextStyle(color: ink.text, fontSize: 14)),
+                          ),
+                          if (value.value == selected)
+                            LucideIcon('check', size: 16, color: ink.subtlest),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
     if (picked != null) await select(picked);
   }
 }
-
-String modeLabel(BuildContext context, String value, [String? fallback]) =>
-    switch (value) {
-      'build' => uiText(context, '变更前确认', 'Ask before changes'),
-      'edit' => uiText(context, '自动编辑', 'Edit automatically'),
-      'plan' => uiText(context, '计划模式', 'Plan mode'),
-      'yolo' || 'fullAccess' => uiText(context, '完全访问', 'Full access'),
-      'default' => uiText(context, '默认模式', 'Default'),
-      _ => fallback ?? value,
-    };
-
-String? modeDescription(BuildContext context, ConfigOptionValue option) =>
-    switch (option.value) {
-      'build' => uiText(context, '改文件前先问我。', 'Ask before file changes.'),
-      'edit' => uiText(context, '自动编辑文件。', 'Edit files automatically.'),
-      'plan' => uiText(context, '编辑前先出计划。', 'Plan before editing.'),
-      'yolo' => uiText(context, '减少确认次数。', 'Run with fewer confirmations.'),
-      _ => option.description,
-    };
 
 String thoughtLabel(BuildContext context, String value) =>
     switch (value.toLowerCase()) {

@@ -1,24 +1,59 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../notifications/task_target.dart';
 import '../protocol/conversation.dart';
+import '../protocol/terminal.dart';
 import '../state/app_sessions.dart';
+import '../state/coding_plan_upgrade.dart';
 import '../state/client_preferences.dart';
 import '../state/device_store.dart';
+import '../state/file_changes_review.dart';
 import '../state/remote_profile.dart';
+import '../state/remote_settings.dart';
 import '../state/workspace_catalog.dart';
 import '../state/workspace_view_state.dart';
+import '../state/workspace_search.dart';
 import '../state/plugin_catalog.dart';
+import '../state/terminal_sessions.dart';
 import '../state/composer_input.dart';
 import 'chat_page.dart';
+import 'command_center.dart';
 import 'device_connection_status.dart';
+import 'file_changes_review_panel.dart';
+import 'git_branch_chip.dart';
 import 'navigation.dart';
 import 'official_icons.dart';
 import 'shell/shell_layout.dart';
 import 'shell/task_navigation.dart';
 import 'theme.dart';
 import 'plugin_marketplace.dart';
+import 'terminal_panel.dart';
+import 'usage/usage_page.dart';
+import 'upgrade_page.dart';
+import 'workspace_file_viewer.dart';
+
+BoxConstraints _deviceMenuConstraints(BuildContext context) {
+  final media = MediaQuery.of(context);
+  final textScale =
+      (media.textScaler.scale(14) / 14).clamp(1.0, 2.0).toDouble();
+  final safeLeft = math.max(media.padding.left, media.viewPadding.left);
+  final safeRight = math.max(media.padding.right, media.viewPadding.right);
+  final availableWidth =
+      math.max(1.0, media.size.width - safeLeft - safeRight - 16.0);
+  final maxWidth = math.min(320.0 * textScale, availableWidth);
+  final minWidth = math.min(230.0 * textScale, maxWidth);
+  final safeTop = math.max(media.padding.top, media.viewPadding.top);
+  final safeBottom = math.max(media.padding.bottom,
+      math.max(media.viewPadding.bottom, media.viewInsets.bottom));
+  final availableHeight =
+      math.max(1.0, media.size.height - safeTop - safeBottom - 16.0);
+  return BoxConstraints(
+      minWidth: minWidth,
+      maxWidth: maxWidth,
+      maxHeight: math.min(480.0 * textScale, availableHeight));
+}
 
 class WorkspaceShell extends StatefulWidget {
   const WorkspaceShell(
@@ -30,6 +65,10 @@ class WorkspaceShell extends StatefulWidget {
       required this.preferences,
       this.sessionId,
       this.initialTitle,
+      this.searchSnippet,
+      this.searchSnippetIndex,
+      this.searchQuery,
+      this.searchRequestId,
       this.onSessionCreated,
       this.conversationBuilder});
   final Device device;
@@ -39,27 +78,29 @@ class WorkspaceShell extends StatefulWidget {
   final ClientPreferences preferences;
   final String? sessionId;
   final String? initialTitle;
+  final String? searchSnippet;
+  final int? searchSnippetIndex;
+  final String? searchQuery;
+  final int? searchRequestId;
   final ValueChanged<String>? onSessionCreated;
   final Widget Function(BuildContext, String?)? conversationBuilder;
   @override
   State<WorkspaceShell> createState() => _WorkspaceShellState();
 }
 
-enum _WorkPanel { summary, sideChat }
+enum _WorkPanel { summary, sideChat, review }
 
 class _WorkspaceShellState extends State<WorkspaceShell> {
-  final _search = TextEditingController();
-  final _chatKey = GlobalKey();
   late String? _sessionId;
-  late final SidebarViewState _sidebarView;
+  late SidebarViewState _sidebarView;
   final _remoteCatalogs = <String, WorkspaceTaskCatalog>{};
   int _seenTaskIndexVersion = -1;
   final _monitors = <String, WorkspaceMonitor>{};
   final _loadingProjects = <String>{};
-  late final WorkspaceViewState _view;
+  late WorkspaceViewState _view;
+  int _sourceGeneration = 0;
   bool get _sidebarCollapsed => _view.sidebarCollapsed;
   set _sidebarCollapsed(bool value) => _view.sidebarCollapsed = value;
-  bool _searchOpen = false;
   _WorkPanel? _panel;
   _WorkPanel get _lastPanel =>
       _WorkPanel.values
@@ -68,13 +109,62 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _WorkPanel.summary;
   set _lastPanel(_WorkPanel value) => _view.panelTab = value.name;
   LocalHistoryEntry? _panelHistory;
+  bool _terminalOpen = false;
+  LocalHistoryEntry? _terminalHistory;
+  FileChangesReviewController? _reviewController;
+  String? _reviewKey;
+  String _reviewInitialPath = '';
   RemoteProfile? _profile;
   bool _creatingSide = false;
+  int _sideCreationOperation = 0;
   String? _sideId;
   ConversationState? _conversationState;
+  final _chatPages = <String, ChatPage>{};
   PluginCatalog? _pluginCatalog;
   bool _pluginOpen = false;
   LocalHistoryEntry? _pluginHistory;
+  RemoteSettingsController? _settingsController;
+
+  void _refreshSettingsAfterFrame(RemoteSettingsController controller) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !identical(_settingsController, controller)) return;
+      unawaited(controller.refresh());
+    });
+  }
+
+  void _openUsagePage(BuildContext context) {
+    final monitor = widget.monitor;
+    final transport = monitor.bridge.conversation(monitor.scope);
+    // Statistics render from the dedicated plan selection, never from the
+    // chat composer's provider (official sidebar usage preference).
+    final planSelection = widget.sessions.usagePlanSelectionFor(
+        deviceId: monitor.source.deviceId,
+        workspaceKey: monitor.source.workspaceKey,
+        transport: transport,
+        preferences: widget.preferences);
+    Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+            builder: (context) => UsagePage(
+                usage: planSelection.usage,
+                planSelection: planSelection,
+                onConfigurePlans: () => showSettingsCenter(
+                    context, widget.sessions, widget.preferences,
+                    remoteMonitor: monitor, section: 'modelProvider'))));
+  }
+
+  void _openUpgradePage(BuildContext context) {
+    final monitor = widget.monitor;
+    final catalog = CodingPlanUpgradeCatalog(
+        session: monitor.bridge,
+        transport: monitor.bridge.conversation(monitor.scope),
+        scopeKey: '${monitor.source.deviceId}|${monitor.source.workspaceKey}');
+    Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+            builder: (context) => UpgradePage(catalog: catalog)));
+  }
+
   String get _viewKey => TaskTarget(
           deviceId: _device.id,
           workspaceKey: widget.workspace.key,
@@ -119,7 +209,12 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     widget.monitor.addListener(_changed);
     widget.sessions.addListener(_changed);
     widget.sessions.store.addListener(_changed);
-    _search.addListener(_changed);
+    _settingsController = widget.sessions.remoteSettingsFor(
+        deviceId: _device.id,
+        workspaceKey: widget.workspace.key,
+        bridge: widget.monitor.bridge)
+      ..addListener(_changed);
+    _refreshSettingsAfterFrame(_settingsController!);
     _syncRemoteIndex();
     final sideKey = TaskTarget(
             deviceId: _device.id,
@@ -136,11 +231,25 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     if (widget.conversationBuilder == null) unawaited(_loadProfile());
   }
 
-  Future<void> _loadProfile() async {
+  Future<void> _loadProfile({int? generation}) async {
+    final sourceGeneration = generation ?? _sourceGeneration;
+    final monitor = widget.monitor;
+    var oauthActive = false;
     try {
-      final profile = await RemoteProfile.load(widget.monitor.bridge);
-      if (mounted) setState(() => _profile = profile);
+      final profile = await RemoteProfile.load(monitor.bridge);
+      if (!mounted || sourceGeneration != _sourceGeneration) return;
+      setState(() => _profile = profile);
+      oauthActive = profile != null;
     } catch (_) {/* The workspace stays usable without account metadata. */}
+    try {
+      if (!mounted || sourceGeneration != _sourceGeneration) return;
+      // Official Root startup migration: after the OAuth state restore the
+      // provider family keys are validated once per session; an invalid key
+      // is reset to the mode default and a just-reset oauth key may upgrade
+      // to the first subscribed team key. Failures keep remote values.
+      await migrateProviderFamilySelections(
+          session: monitor.bridge, upgradeTeamPlan: oauthActive);
+    } catch (_) {/* The official flow only logs this failure. */}
   }
 
   void _changed() {
@@ -168,13 +277,94 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   }
 
   @override
+  void didUpdateWidget(covariant WorkspaceShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final sourceChanged = oldWidget.device.id != widget.device.id ||
+        oldWidget.workspace.key != widget.workspace.key ||
+        oldWidget.monitor != widget.monitor ||
+        oldWidget.sessions != widget.sessions;
+    final sessionChanged = oldWidget.sessionId != widget.sessionId;
+    // A new search request is forwarded by build without resetting workspace
+    // catalogs, pending side-chat work, or the open terminal.
+    if (!sourceChanged && !sessionChanged) return;
+    final sidebarWasCollapsed = _sidebarCollapsed;
+    if (sourceChanged) {
+      _sourceGeneration++;
+      _sideCreationOperation++;
+      _settingsController?.removeListener(_changed);
+      // Cache only within one device/workspace source. A complete source
+      // switch removes the old ChatPage subtree so its focus and voice
+      // controller dispose with the page; drafts/view state remain in stores.
+      _chatPages.clear();
+      for (final monitor in _monitors.values) {
+        monitor.removeListener(_changed);
+      }
+      _monitors
+        ..clear()
+        ..[widget.workspace.key] = widget.monitor;
+      _remoteCatalogs.clear();
+      _loadingProjects.clear();
+      _seenTaskIndexVersion = -1;
+      widget.monitor.addListener(_changed);
+      _settingsController = widget.sessions.remoteSettingsFor(
+          deviceId: _device.id,
+          workspaceKey: widget.workspace.key,
+          bridge: widget.monitor.bridge)
+        ..addListener(_changed);
+      _refreshSettingsAfterFrame(_settingsController!);
+      _pluginHistory?.remove();
+      _pluginHistory = null;
+      _pluginCatalog?.dispose();
+      _pluginCatalog = null;
+      _pluginOpen = false;
+      _closeTerminalDrawer();
+      _profile = null;
+    }
+    _sessionId = widget.sessionId;
+    if (sourceChanged || sessionChanged) {
+      _view = widget.sessions.workspaceViewStates
+          .putIfAbsent(_viewKey, WorkspaceViewState.new);
+      if (!sourceChanged) _view.sidebarCollapsed = sidebarWasCollapsed;
+      if (sourceChanged) {
+        _sidebarView = widget.sessions.sidebarStates
+            .putIfAbsent(_device.id, SidebarViewState.new);
+        _sidebarView.expandedProjects.add(widget.workspace.key);
+      }
+      _reviewController?.dispose();
+      _reviewController = null;
+      _reviewKey = null;
+      _reviewInitialPath = '';
+      _conversationState = null;
+    }
+    if (sourceChanged || sessionChanged) {
+      // Invalidate a pending operation when its parent/source changes. Its
+      // result may still populate that parent's cache, but must not affect
+      // the newly selected pane or its loading indicator.
+      _sideCreationOperation++;
+    }
+    _creatingSide = false;
+    final sideKey = TaskTarget(
+            deviceId: _device.id,
+            workspaceKey: widget.workspace.key,
+            sessionId: _sessionId ?? '',
+            title: '')
+        .key;
+    _sideId = widget.sessions.sideChats[sideKey];
+    if (sourceChanged) _syncRemoteIndex();
+    if (sourceChanged && widget.conversationBuilder == null) {
+      unawaited(_loadProfile(generation: _sourceGeneration));
+    }
+  }
+
+  @override
   void dispose() {
+    _reviewController?.dispose();
     for (final monitor in _monitors.values) {
       monitor.removeListener(_changed);
     }
+    _settingsController?.removeListener(_changed);
     widget.sessions.removeListener(_changed);
     widget.sessions.store.removeListener(_changed);
-    _search.dispose();
     super.dispose();
   }
 
@@ -189,11 +379,18 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         _loadingProjects.contains(project.key)) {
       return;
     }
+    final sourceGeneration = _sourceGeneration;
+    final deviceId = _device.id;
     setState(() => _loadingProjects.add(project.key));
     try {
       final monitor = await widget.sessions
           .openWorkspace(_device, project.key, project.scope);
-      if (!mounted) return;
+      if (!mounted ||
+          sourceGeneration != _sourceGeneration ||
+          deviceId != _device.id) {
+        monitor.dispose();
+        return;
+      }
       _monitors[project.key] = monitor;
       monitor.catalog.replaceRemote(_remoteCatalogs[project.key]?.remote ?? []);
       monitor.addListener(_changed);
@@ -202,7 +399,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _toast(uiText(
           context, '项目加载失败，请重试', 'Could not load the project. Try again.'));
     } finally {
-      if (mounted) setState(() => _loadingProjects.remove(project.key));
+      if (mounted && sourceGeneration == _sourceGeneration) {
+        setState(() => _loadingProjects.remove(project.key));
+      }
     }
   }
 
@@ -251,6 +450,13 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
   void _closePluginStore() {
     _pluginHistory?.remove();
+    // E1.3: invalidate composer plugin reference candidates after marketplace
+    // closes, so enable/disable/uninstall changes are reflected on next open.
+    final composer = widget.sessions.composers.obtain(
+        transport: widget.monitor.bridge.conversation(widget.workspace.scope),
+        deviceId: _device.id,
+        workspaceKey: widget.workspace.key);
+    composer.references.invalidateCategory('plugins');
   }
 
   void _usePlugin(CatalogPlugin plugin) {
@@ -372,9 +578,171 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     if (mounted) setState(() => _panel = null);
   }
 
+  /// Official remote keeps terminals in a bottom drawer with its own
+  /// predictive-back entry, independent from the side work panel.
+  void _toggleTerminal() {
+    if (_terminalOpen) {
+      _closeTerminalDrawer();
+      return;
+    }
+    _terminalHistory ??= LocalHistoryEntry(onRemove: () {
+      _terminalHistory = null;
+      if (mounted) setState(() => _terminalOpen = false);
+    });
+    ModalRoute.of(context)?.addLocalHistoryEntry(_terminalHistory!);
+    setState(() => _terminalOpen = true);
+  }
+
+  void _closeTerminalDrawer() {
+    final history = _terminalHistory;
+    _terminalHistory = null;
+    history?.remove();
+    if (mounted) setState(() => _terminalOpen = false);
+  }
+
+  TerminalWorkspaceSessions _terminalWorkspace() =>
+      widget.sessions.terminalSessions.workspace(
+        deviceId: _device.id,
+        workspaceKey: widget.workspace.key,
+        client: TerminalClient(session: widget.monitor.bridge),
+        cwd: widget.workspace.scope['workspacePath'] as String? ??
+            widget.workspace.title,
+      );
+
+  /// Official diff review opens as a side panel whose controller is owned by
+  /// the shell, so tabs survive conversation row recycling.
+  void _openFileReview(Map<String, dynamic> row, String path) {
+    if (path.isEmpty) return;
+    final key =
+        '${row['rowId'] ?? 0}|${row['entityId']}|${_device.id}|${widget.workspace.key}|${_sessionId ?? ''}';
+    if (_reviewKey != key || _reviewController == null) {
+      _reviewController?.dispose();
+      _reviewKey = key;
+      _reviewController = FileChangesReviewController(
+        transport: widget.monitor.bridge.conversation(widget.workspace.scope),
+        scope: FileChangesScope(
+          deviceId: _device.id,
+          workspaceKey: widget.workspace.key,
+          sessionId: _sessionId ?? '',
+          rowId: row['rowId'] as int? ?? 0,
+          entityId: row['entityId'],
+        ),
+        revision: () => _conversationState?.revision ?? 0,
+        logEpoch: () => _conversationState?.logEpoch,
+      );
+    }
+    _reviewInitialPath = path;
+    if (_panel != _WorkPanel.review) {
+      _showPanel(_WorkPanel.review);
+    } else {
+      setState(() {});
+    }
+  }
+
+  List<SidebarProject> _commandProjects() => [
+        for (final project
+            in _projects.isEmpty ? [widget.workspace] : _projects)
+          SidebarProject(
+              project,
+              _monitors[project.key]?.catalog ??
+                  _remoteCatalogs.putIfAbsent(
+                      project.key, () => WorkspaceTaskCatalog(project.scope)))
+      ];
+
+  void _openCommandCenter(BuildContext context) {
+    final search = WorkspaceSearchController(
+        transport: widget.monitor.bridge.conversation(widget.workspace.scope),
+        currentWorkspaceKey: widget.workspace.key,
+        scopes: [
+          for (final project
+              in _projects.isEmpty ? [widget.workspace] : _projects)
+            WorkspaceSearchScope(
+                workspaceKey: project.key,
+                title: project.title,
+                scope: project.scope),
+        ],
+        currentTaskId: _sessionId);
+    unawaited(() async {
+      try {
+        await showCommandCenter(
+          context,
+          search: search,
+          actions: CommandCenterActions(
+            newTask: () => unawaited(_openTask(widget.workspace, null)),
+            openWorkspace: () => showDeviceDirectory(
+                context, widget.sessions, widget.preferences),
+            openSettings: () => showSettingsCenter(
+                context, widget.sessions, widget.preferences,
+                remoteMonitor: widget.monitor),
+            toggleSidebar: () =>
+                setState(() => _sidebarCollapsed = !_sidebarCollapsed),
+            toggleTerminal: () => _toggleTerminal(),
+            addTerminalTab: () {
+              if (!_terminalOpen) _toggleTerminal();
+              _terminalWorkspace().add();
+            },
+            openTask: (entry) =>
+                unawaited(_openTask(entry.project.workspace, entry.task)),
+            openSearchResult: (result) => unawaited(_openSearchResult(result)),
+          ),
+          tasks: commandCenterTasks(_commandProjects()),
+          activeTaskId: _sessionId,
+          changes: commandCenterChangesFromRows(
+              _conversationState?.rows ?? const []),
+        );
+      } finally {
+        search.dispose();
+      }
+    }());
+  }
+
+  Future<void> _openSearchResult(WorkspaceSearchResult result) async {
+    if (result.kind == WorkspaceSearchResultKind.file) {
+      final project = _projects
+          .where((project) => project.key == result.workspaceKey)
+          .firstOrNull;
+      if (project == null || result.filePath == null) return;
+      await _ensureProject(project);
+      final monitor = _monitors[project.key];
+      final root = project.scope['workspacePath'] as String?;
+      if (monitor == null || root == null || root.isEmpty) return;
+      final relative = result.filePath!;
+      final path = root.endsWith('/') || root.endsWith('\\')
+          ? '$root$relative'
+          : '$root/${relative.replaceAll('\\', '/')}';
+      if (!mounted) return;
+      await showDialog<void>(
+          context: context,
+          builder: (_) => WorkspaceFileViewer(
+              transport: monitor.bridge.conversation(project.scope),
+              path: path,
+              title: relative));
+      return;
+    }
+    final project = _projects
+        .where((project) => project.key == result.workspaceKey)
+        .firstOrNull;
+    if (project == null || result.sessionId == null) return;
+    final target = TaskTarget(
+        deviceId: _device.id,
+        workspaceKey: project.key,
+        workspacePath: project.scope['workspacePath'] as String?,
+        sessionId: result.sessionId!,
+        title: result.title);
+    await openDeviceWorkspace(
+        context, widget.sessions, widget.preferences, _device,
+        target: target,
+        workspace: project,
+        searchSnippet: result.snippet,
+        searchSnippetIndex: result.snippetIndex,
+        searchQuery: result.query);
+  }
+
   Future<void> _startSideChat() async {
     if (_sessionId == null || _creatingSide) return;
     final parentId = _sessionId!;
+    final sourceGeneration = _sourceGeneration;
+    final operation = ++_sideCreationOperation;
     setState(() => _creatingSide = true);
     try {
       final key = TaskTarget(
@@ -388,14 +756,84 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           await widget.monitor.bridge
               .conversation(widget.workspace.scope)
               .createSelectionSideSession(parentId);
-      widget.sessions.sideChats[key] = id;
-      if (mounted && _sessionId == parentId) setState(() => _sideId = id);
+      // Keep a completed side id for its own parent even if the user has
+      // already switched to another parent in the same device/workspace.
+      // The operation token below still prevents this late result from
+      // changing the active pane or loading indicator.
+      if (sourceGeneration == _sourceGeneration) {
+        widget.sessions.sideChats[key] = id;
+      }
+      if (!mounted ||
+          sourceGeneration != _sourceGeneration ||
+          operation != _sideCreationOperation) {
+        return;
+      }
+      if (mounted && _sessionId == parentId) {
+        setState(() => _sideId = id);
+      }
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted ||
+          sourceGeneration != _sourceGeneration ||
+          operation != _sideCreationOperation) {
+        return;
+      }
       _toast(uiText(context, '辅助对话暂时无法打开', 'Could not open side chat'));
     } finally {
-      if (mounted) setState(() => _creatingSide = false);
+      if (mounted &&
+          sourceGeneration == _sourceGeneration &&
+          operation == _sideCreationOperation) {
+        setState(() => _creatingSide = false);
+      }
     }
+  }
+
+  Widget _conversationForSource(BuildContext context) {
+    final sourceKey = '${_device.id}|${widget.workspace.key}';
+    final page = ChatPage(
+        key: ValueKey('chat:$sourceKey'),
+        session: widget.monitor.bridge,
+        deviceSession: widget.sessions.sessionOf(_device.id),
+        onPairAgain: () async =>
+            showDeviceDirectory(context, widget.sessions, widget.preferences),
+        scope: widget.workspace.scope,
+        workspaceKey: widget.workspace.key,
+        deviceId: _device.id,
+        drafts: widget.sessions.drafts,
+         composerStore: widget.sessions.composers,
+         settingsController: _settingsController,
+        viewStates: widget.sessions.conversationViewStates,
+        sessionId: _sessionId,
+        searchSnippet: widget.searchSnippet,
+        searchSnippetIndex: widget.searchSnippetIndex,
+        searchQuery: widget.searchQuery,
+        searchRequestId: widget.searchRequestId,
+        title: _title(context),
+        workspaceName: widget.workspace.title,
+        embedded: true,
+        onSessionCreated: (id) {
+          if (sourceKey != '${_device.id}|${widget.workspace.key}') return;
+          widget.sessions.workspaceViewStates.remove(_viewKey);
+          if (mounted) setState(() => _sessionId = id);
+          widget.sessions.workspaceViewStates[_viewKey] = _view;
+          widget.onSessionCreated?.call(id);
+        },
+        onStateChanged: (state) {
+          if (sourceKey != '${_device.id}|${widget.workspace.key}') return;
+          _conversationState = state;
+          if (mounted && _panel != null) setState(() {});
+        },
+        onOpenHooks: () => showSettingsCenter(
+            context, widget.sessions, widget.preferences,
+            remoteMonitor: widget.monitor, section: 'hooks'),
+        onOpenModels: () => showSettingsCenter(
+            context, widget.sessions, widget.preferences,
+            remoteMonitor: widget.monitor, section: 'modelProvider'));
+    _chatPages[sourceKey] = page;
+    final keys = _chatPages.keys.toList();
+    return Stack(fit: StackFit.expand, children: [
+      for (final key in keys)
+        Offstage(offstage: key != sourceKey, child: _chatPages[key]!)
+    ]);
   }
 
   @override
@@ -420,29 +858,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     }
     final content = usable
         ? (widget.conversationBuilder?.call(context, _sessionId) ??
-            ChatPage(
-                key: _chatKey,
-                session: widget.monitor.bridge,
-                scope: widget.workspace.scope,
-                workspaceKey: widget.workspace.key,
-                deviceId: _device.id,
-                drafts: widget.sessions.drafts,
-                composerStore: widget.sessions.composers,
-                viewStates: widget.sessions.conversationViewStates,
-                sessionId: _sessionId,
-                title: _title(context),
-                workspaceName: widget.workspace.title,
-                embedded: true,
-                onSessionCreated: (id) {
-                  widget.sessions.workspaceViewStates.remove(_viewKey);
-                  if (mounted) setState(() => _sessionId = id);
-                  widget.sessions.workspaceViewStates[_viewKey] = _view;
-                  widget.onSessionCreated?.call(id);
-                },
-                onStateChanged: (state) {
-                  _conversationState = state;
-                  if (mounted && _panel != null) setState(() {});
-                }))
+            _conversationForSource(context))
         : Center(
             child: Padding(
                 padding: const EdgeInsets.all(24),
@@ -458,51 +874,85 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                               replace: true),
                       child: Text(uiText(context, '重新连接', 'Reconnect')))
                 ])));
-    return WorkspaceShellLayout(
-        title: _pluginOpen
-            ? uiText(context, '插件市场', 'Plugin marketplace')
-            : _title(context),
-        project: widget.workspace.title,
-        sidebarCollapsed: _sidebarCollapsed,
-        onSidebarCollapsed: (value) =>
-            setState(() => _sidebarCollapsed = value),
-        sidebar: _sidebar(context, ink),
-        conversation: Stack(fit: StackFit.expand, children: [
-          ExcludeFocus(
-              excluding: _pluginOpen,
-              child: Offstage(offstage: _pluginOpen, child: content)),
-          if (_pluginCatalog != null)
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyK, control: true): () =>
+            _openCommandCenter(context),
+        const SingleActivator(LogicalKeyboardKey.keyN, control: true): () =>
+            unawaited(_openTask(widget.workspace, null)),
+        const SingleActivator(LogicalKeyboardKey.keyB, control: true): () =>
+            setState(() => _sidebarCollapsed = !_sidebarCollapsed),
+        const SingleActivator(LogicalKeyboardKey.keyJ, control: true): () =>
+            _toggleTerminal(),
+      },
+      child: Focus(
+        autofocus: true,
+        skipTraversal: true,
+        child: WorkspaceShellLayout(
+          title: _pluginOpen
+              ? uiText(context, '插件市场', 'Plugin marketplace')
+              : _title(context),
+          project: widget.workspace.title,
+          sidebarCollapsed: _sidebarCollapsed,
+          onSidebarCollapsed: (value) =>
+              setState(() => _sidebarCollapsed = value),
+          sidebar: _sidebar(context, ink),
+          conversation: Stack(fit: StackFit.expand, children: [
             ExcludeFocus(
-                excluding: !_pluginOpen,
+                excluding: _pluginOpen,
                 child: Offstage(
-                    offstage: !_pluginOpen,
-                    child: PluginMarketplace(
-                        catalog: _pluginCatalog!, onUse: _usePlugin))),
-        ]),
-        onMore: _pluginOpen ? null : () => _showTaskMenu(context),
-        actions: [
-          if (_pluginOpen)
+                    offstage: _pluginOpen,
+                    child: FileChangesReviewHost(
+                        openReview: _openFileReview, child: content))),
+            if (_pluginCatalog != null)
+              ExcludeFocus(
+                  excluding: !_pluginOpen,
+                  child: Offstage(
+                      offstage: !_pluginOpen,
+                      child: PluginMarketplace(
+                          catalog: _pluginCatalog!, onUse: _usePlugin))),
+          ]),
+          onMore: _pluginOpen ? null : () => _showTaskMenu(context),
+          actions: [
+            if (usable && !_pluginOpen)
+              GitBranchChip(
+                session: widget.monitor.bridge,
+                scope: widget.workspace.scope,
+              ),
+            if (_pluginOpen)
+              ShellIconButton(
+                  icon: 'x',
+                  label: uiText(context, '返回任务', 'Back to task'),
+                  onPressed: _closePluginStore),
+            if (usable && !_pluginOpen)
+              ShellIconButton(
+                  icon: 'square-terminal',
+                  label: uiText(context, '切换终端', 'Toggle terminal'),
+                  selected: _terminalOpen,
+                  onPressed: _toggleTerminal),
             ShellIconButton(
-                icon: 'x',
-                label: uiText(context, '返回任务', 'Back to task'),
-                onPressed: _closePluginStore),
-          ShellIconButton(
-              icon: 'panel-right',
-              label: uiText(context, '工作面板', 'Work panel'),
-              selected: _panel != null,
-              onPressed: usable && !_pluginOpen
-                  ? () {
-                      if (_panel != null) {
-                        _closePanel();
-                      } else {
-                        _showPanel(_lastPanel);
+                icon: 'panel-right',
+                label: uiText(context, '工作面板', 'Work panel'),
+                selected: _panel != null,
+                onPressed: usable && !_pluginOpen
+                    ? () {
+                        if (_panel != null) {
+                          _closePanel();
+                        } else {
+                          _showPanel(_lastPanel);
+                        }
                       }
-                    }
-                  : null)
-        ],
-        panelOpen: _panel != null,
-        panel: usable ? _workPanel(context, ink) : null,
-        onClosePanel: _closePanel);
+                    : null)
+          ],
+          panelOpen: _panel != null,
+          panel: usable ? _workPanel(context, ink) : null,
+          onClosePanel: _closePanel,
+          bottomPanel: usable ? _terminalDrawer(context) : null,
+          bottomPanelOpen: _terminalOpen,
+          onCloseBottomPanel: _closeTerminalDrawer,
+        ),
+      ),
+    );
   }
 
   Widget _sidebar(BuildContext context, InkTokens ink) =>
@@ -513,7 +963,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
         }
 
         final projects = _projects.isEmpty ? [widget.workspace] : _projects;
-        final query = _search.text.trim().toLowerCase();
+        const query = '';
         return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -523,12 +973,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                 unawaited(_openTask(widget.workspace, null));
               }),
               _navButton(ink, 'search', uiText(context, '搜索', 'Search'), () {
-                setState(() => _searchOpen = !_searchOpen);
-                if (_searchOpen) {
-                  for (final project in projects) {
-                    unawaited(_ensureProject(project));
-                  }
-                }
+                closeDrawer();
+                _openCommandCenter(context);
               }),
               _navButton(
                   ink, 'blocks', uiText(context, '插件市场', 'Plugin marketplace'),
@@ -536,16 +982,6 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                 closeDrawer();
                 _showPluginStore();
               }),
-              if (_searchOpen)
-                Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
-                    child: TextField(
-                        controller: _search,
-                        autofocus: true,
-                        decoration: InputDecoration(
-                            isDense: true,
-                            hintText: uiText(context, '搜索任务…', 'Search tasks…'),
-                            border: const OutlineInputBorder()))),
               Expanded(
                   child: TaskNavigation(
                       projects: [
@@ -579,9 +1015,14 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   child: PopupMenuButton<String>(
                       tooltip: uiText(context, '切换设备', 'Switch device'),
-                      offset: const Offset(0, -220),
-                      constraints:
-                          const BoxConstraints(minWidth: 230, maxWidth: 290),
+                      // PopupMenuButton resolves the current RenderBox into
+                      // the overlay at open/layout time. Let its under/over
+                      // placement choose the available side instead of
+                      // applying a fixed negative offset that overflows on
+                      // short screens and with large text.
+                      position: PopupMenuPosition.under,
+                      offset: Offset.zero,
+                      constraints: _deviceMenuConstraints(context),
                       onSelected: (id) {
                         closeDrawer();
                         if (id == '@manage') {
@@ -670,9 +1111,28 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                                 minWidth: 200, maxWidth: 260),
                             onSelected: (section) {
                               closeDrawer();
+                              if (section == 'usage') {
+                                _openUsagePage(context);
+                                return;
+                              }
+                              if (section == 'logout') {
+                                // Official remote-control account menu has
+                                // no login entry and its logout label is
+                                // 断开连接 (E2.1 evidence): disconnect the
+                                // current remote session and return to the
+                                // device page. Desktop OAuth login stays
+                                // out of scope for remote control.
+                                widget.sessions.disconnect(_device.id);
+                                return;
+                              }
+                              if (section == 'upgrade') {
+                                _openUpgradePage(context);
+                                return;
+                              }
                               showSettingsCenter(
                                   context, widget.sessions, widget.preferences,
-                                  section: section);
+                                  section: section,
+                                  remoteMonitor: widget.monitor);
                             },
                             itemBuilder: (context) => [
                                   PopupMenuItem(
@@ -683,6 +1143,17 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                                       value: 'appearance',
                                       child: Text(uiText(
                                           context, '主题与文字', 'Theme and text'))),
+                                  // Usage entry (official AOt component: usage
+                                  // click always visible when account scope exists).
+                                  PopupMenuItem(
+                                      value: 'usage',
+                                      child: Text(
+                                          uiText(context, '使用统计', 'Usage'))),
+                                  if (_profile != null)
+                                    PopupMenuItem(
+                                        value: 'upgrade',
+                                        child: Text(
+                                            uiText(context, '升级', 'Upgrade'))),
                                   const PopupMenuDivider(),
                                   PopupMenuItem(
                                       value: 'notifications',
@@ -692,6 +1163,15 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                                       value: 'general',
                                       child: Text(
                                           uiText(context, '设置', 'Settings'))),
+                                  // Official remote-control menu: only the
+                                  // disconnect entry (E2.1 evidence, the
+                                  // 断开连接 label is the official logout
+                                  // action); desktop OAuth login is not
+                                  // applicable to remote control.
+                                  PopupMenuItem(
+                                      value: 'logout',
+                                      child: Text(uiText(
+                                          context, '断开连接', 'Disconnect'))),
                                 ],
                             child: Padding(
                                 padding:
@@ -732,7 +1212,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                         onPressed: () {
                           closeDrawer();
                           showSettingsCenter(
-                              context, widget.sessions, widget.preferences);
+                              context, widget.sessions, widget.preferences,
+                              remoteMonitor: widget.monitor);
                         }),
                   ])),
             ]);
@@ -790,70 +1271,136 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
     if (action == 'side') _showPanel(_WorkPanel.sideChat);
   }
 
-  Widget _workPanel(BuildContext context, InkTokens ink) => Column(children: [
-        Wrap(children: [
-          TextButton(
-              onPressed: () => setState(() {
-                    _panel = _WorkPanel.summary;
-                    _lastPanel = _panel!;
-                  }),
-              child: Text(uiText(context, '任务状态', 'Task status'))),
-          TextButton(
-              onPressed: () => setState(() {
-                    _panel = _WorkPanel.sideChat;
-                    _lastPanel = _panel!;
-                  }),
-              child: Text(uiText(context, '辅助对话', 'Side chat')))
-        ]),
-        Expanded(
-            child: IndexedStack(
-                index: _lastPanel == _WorkPanel.sideChat ? 0 : 1,
-                children: [
-              (_sideId != null
-                  ? ChatPage(
-                      key: ValueKey(_sideId),
-                      session: widget.monitor.bridge,
-                      scope: widget.workspace.scope,
-                      workspaceKey: widget.workspace.key,
-                      deviceId: _device.id,
-                      drafts: widget.sessions.drafts,
-                      composerStore: widget.sessions.composers,
-                      viewStates: widget.sessions.conversationViewStates,
-                      sessionId: _sideId,
-                      title: uiText(context, '辅助对话', 'Side chat'),
-                      embedded: true)
-                  : Center(
-                      child: Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: _sessionId == null
-                              ? Text(uiText(context, '开始主对话后可打开辅助对话',
-                                  'Start the main task before opening side chat'))
-                              : FilledButton(
-                                  onPressed:
-                                      _creatingSide ? null : _startSideChat,
-                                  child: Text(_creatingSide
-                                      ? uiText(context, '正在打开…', 'Opening…')
-                                      : uiText(context, '打开辅助对话',
-                                          'Open side chat')))))),
-              ListView(padding: const EdgeInsets.all(16), children: [
-                Text(_title(context),
-                    style: const TextStyle(fontWeight: FontWeight.w500)),
-                const SizedBox(height: 16),
-                Text(widget.workspace.title,
-                    style: TextStyle(color: ink.subtlest)),
-                const SizedBox(height: 12),
-                Text(_task?.pendingInteraction != null
-                    ? uiText(context, '等待你的处理', 'Waiting for your input')
-                    : _task?.phase == 'running'
-                        ? uiText(context, '任务运行中', 'Task running')
-                        : uiText(context, '任务已就绪', 'Task ready')),
-                if (_conversationState != null) ...[
-                  const SizedBox(height: 18),
-                  for (final row in _conversationState!.rows
-                      .where((row) => row['kind'] == 'changeSummary'))
-                    ConversationChangeSummary(row: row)
-                ],
-              ])
-            ])),
-      ]);
+  Widget _workPanel(BuildContext context, InkTokens ink) {
+    if (_panel == _WorkPanel.review) {
+      final controller = _reviewController;
+      if (controller != null) {
+        return FileChangesReviewPanel(
+          controller: controller,
+          initialPath: _reviewInitialPath,
+          onLastTabClosed: _closePanel,
+        );
+      }
+      // Restored from persisted state without row context: summary instead.
+      _panel = _WorkPanel.summary;
+    }
+    return Column(children: [
+      Wrap(children: [
+        TextButton(
+            onPressed: () => setState(() {
+                  _panel = _WorkPanel.summary;
+                  _lastPanel = _panel!;
+                }),
+            child: Text(uiText(context, '任务状态', 'Task status'))),
+        TextButton(
+            onPressed: () => setState(() {
+                  _panel = _WorkPanel.sideChat;
+                  _lastPanel = _panel!;
+                }),
+            child: Text(uiText(context, '辅助对话', 'Side chat'))),
+      ]),
+      Expanded(
+          child: IndexedStack(
+              index: switch (_panel) {
+                _WorkPanel.sideChat => 0,
+                _WorkPanel.summary => 1,
+                _ => 1,
+              },
+              children: [
+            (_sideId != null
+                ? ChatPage(
+                    key: ValueKey(_sideId),
+                    session: widget.monitor.bridge,
+                    deviceSession: widget.sessions.sessionOf(_device.id),
+                    onPairAgain: () async => showDeviceDirectory(
+                        context, widget.sessions, widget.preferences),
+                    scope: widget.workspace.scope,
+                    workspaceKey: widget.workspace.key,
+                    deviceId: _device.id,
+                    drafts: widget.sessions.drafts,
+                    composerStore: widget.sessions.composers,
+                    settingsController: _settingsController,
+                    viewStates: widget.sessions.conversationViewStates,
+                    sessionId: _sideId,
+                    title: uiText(context, '辅助对话', 'Side chat'),
+                    embedded: true,
+                    isSideChat: true,
+                    onOpenHooks: () => showSettingsCenter(
+                        context, widget.sessions, widget.preferences,
+                        remoteMonitor: widget.monitor, section: 'hooks'),
+                    onOpenModels: () => showSettingsCenter(
+                        context, widget.sessions, widget.preferences,
+                        remoteMonitor: widget.monitor,
+                        section: 'modelProvider'))
+                : Center(
+                    child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: _sessionId == null
+                            ? Text(uiText(context, '开始主对话后可打开辅助对话',
+                                'Start the main task before opening side chat'))
+                            : FilledButton(
+                                onPressed:
+                                    _creatingSide ? null : _startSideChat,
+                                child: Text(_creatingSide
+                                    ? uiText(context, '正在打开…', 'Opening…')
+                                    : uiText(context, '打开辅助对话',
+                                        'Open side chat')))))),
+            ListView(padding: const EdgeInsets.all(16), children: [
+              Text(_title(context),
+                  style: const TextStyle(fontWeight: FontWeight.w500)),
+              const SizedBox(height: 16),
+              Text(widget.workspace.title,
+                  style: TextStyle(color: ink.subtlest)),
+              const SizedBox(height: 12),
+              Text(_task?.pendingInteraction != null
+                  ? uiText(context, '等待你的处理', 'Waiting for your input')
+                  : _task?.phase == 'running'
+                      ? uiText(context, '任务运行中', 'Task running')
+                      : uiText(context, '任务已就绪', 'Task ready')),
+              if (_conversationState != null) ...[
+                const SizedBox(height: 18),
+                for (final row in _summaryRows())
+                  ConversationChangeSummary(
+                    key: ValueKey('summary-${row['rowId'] ?? row['entityId']}'),
+                    row: row,
+                    reviewCacheVersion:
+                        '${_conversationState!.logEpoch}|${row['state']}|${row['fileChanges']}',
+                    createReview: _createSummaryReview,
+                    onOpenReview: (path) => _openFileReview(row, path),
+                  )
+              ],
+            ]),
+          ])),
+    ]);
+  }
+
+  List<Map<String, dynamic>> _summaryRows() {
+    return conversationFileChangeSummaryRows(
+        _conversationState?.rows ?? const <Map<String, dynamic>>[]);
+  }
+
+  FileChangesReviewController _createSummaryReview(
+      Map<String, dynamic> row) {
+    return FileChangesReviewController(
+      transport: widget.monitor.bridge.conversation(widget.workspace.scope),
+      scope: FileChangesScope(
+        deviceId: _device.id,
+        workspaceKey: widget.workspace.key,
+        sessionId: _sessionId ?? '',
+        rowId: row['rowId'] as int? ?? 0,
+        entityId: row['entityId'],
+      ),
+      revision: () => _conversationState?.revision ?? 0,
+      logEpoch: () => _conversationState?.logEpoch,
+    );
+  }
+
+  Widget _terminalDrawer(BuildContext context) => TerminalDrawer(
+        client: TerminalClient(session: widget.monitor.bridge),
+        cwd: widget.workspace.scope['workspacePath'] as String? ??
+            widget.workspace.title,
+        visible: _terminalOpen,
+        workspace: _terminalWorkspace(),
+        onCloseDrawer: _closeTerminalDrawer,
+      );
 }

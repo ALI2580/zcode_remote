@@ -41,6 +41,7 @@ class ComposerAttachment {
   bool cancelled = false;
   bool tooLarge = false;
   bool unavailable;
+  String? uploadError;
   int retries = 0;
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -101,6 +102,34 @@ class ComposerAttachments extends ChangeNotifier {
         entry.phase = AttachmentPhase.ready;
         entry.progress = 1;
       }
+      items.add(entry);
+    }
+    _notify();
+    _drain();
+  }
+
+  /// Restores already uploaded queue attachments. The remote descriptor is
+  /// authoritative; bytes are no longer locally readable after a process or
+  /// queue lifetime boundary, but the descriptor remains safe to resend.
+  void restoreQueued(List<Map<String, dynamic>> descriptors) {
+    if (_disposed) return;
+    for (final raw in descriptors) {
+      final descriptor = Map<String, dynamic>.from(raw);
+      final ref = descriptor['ref'];
+      if (ref is! String || ref.isEmpty) continue;
+      final bytes = descriptor['bytes'];
+      final entry = ComposerAttachment(PickedAttachment(
+          name: descriptor['fileName'] is String
+              ? descriptor['fileName'] as String
+              : 'attachment',
+          mime: descriptor['mime'] is String
+              ? descriptor['mime'] as String
+              : 'application/octet-stream',
+          size: bytes is num ? bytes.toInt() : 0,
+          read: () => Future.error(const AttachmentUnavailable())));
+      entry.descriptor = descriptor;
+      entry.phase = AttachmentPhase.ready;
+      entry.progress = 1;
       items.add(entry);
     }
     _notify();
@@ -214,6 +243,12 @@ class ComposerAttachments extends ChangeNotifier {
     } catch (error) {
       if (!current()) return;
       if (error is AttachmentUnavailable) entry.unavailable = true;
+      entry.uploadError = switch (error) {
+        AttachmentUnavailable() => null,
+        StateError() => error.message,
+        TimeoutException() => 'timeout',
+        _ => error.toString(),
+      };
       entry.phase = AttachmentPhase.failed;
       if (error is TimeoutException && entry.retries++ < 1) {
         await Future<void>.delayed(const Duration(milliseconds: 500));

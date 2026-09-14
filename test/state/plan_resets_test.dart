@@ -569,4 +569,76 @@ void main() {
         isFalse);
     close();
   });
+
+  testWidgets(
+      'same-source views and independent devices isolate foreground maintenance',
+      (tester) async {
+    final bridgeB = FeatureBridge();
+    var idB = 0;
+    final resetsB = PlanResets(bridgeB.conversationTransport,
+        now: () => DateTime.fromMillisecondsSinceEpoch(now),
+        delay: (_) async {},
+        newId: () => 'b-${++idB}');
+    addTearDown(() {
+      resetsB.dispose();
+      bridgeB.channels.dispose();
+    });
+    bridgeB.channels.handler = (channel, method, args) =>
+        method == 'getCodingPlanResetStatus'
+            ? status
+            : method == 'requestCodingPlanResetOpportunity'
+                ? {'granted': false}
+                : {};
+    final usageA = ComposerUsage(bridge.conversationTransport, resets: resets);
+    final usageB = ComposerUsage(bridgeB.conversationTransport, resets: resetsB);
+    addTearDown(() {
+      usageA.dispose();
+      usageB.dispose();
+    });
+    usageA.selectProvider(_provider);
+    usageB.selectProvider(_provider);
+    await usageA.refresh();
+    await usageB.refresh();
+    final closeMainA = usageA.observeResets();
+    final closeSideA = usageA.observeResets();
+    var deviceBRefreshes = 0;
+    final closeB = resetsB.observe(_source, refreshEntitlement: () async {
+      deviceBRefreshes++;
+    });
+    addTearDown(closeB);
+    await tester.pump();
+    int statusOn(FeatureBridge device) => device.channels.calls
+        .where((c) => c.method == 'getCodingPlanResetStatus')
+        .length;
+    int opportunitiesOn(FeatureBridge device) => device.channels.calls
+        .where((c) => c.method == 'requestCodingPlanResetOpportunity')
+        .length;
+    expect(statusOn(bridge), 1);
+    expect(opportunitiesOn(bridge), 1);
+    expect(statusOn(bridgeB), 1);
+    expect(opportunitiesOn(bridgeB), 1);
+    usageA.didChangeAppLifecycleState(AppLifecycleState.paused);
+    final pausedA = statusOn(bridge);
+    now += 600000;
+    await tester.pump(const Duration(minutes: 10));
+    expect(statusOn(bridge), pausedA);
+    expect(statusOn(bridgeB), greaterThan(1));
+    usageA.didChangeAppLifecycleState(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(statusOn(bridge), greaterThan(pausedA));
+    usageA.selectProvider('other-provider');
+    final stopped = statusOn(bridge);
+    now += 600000;
+    await tester.pump(const Duration(minutes: 10));
+    expect(statusOn(bridge), stopped);
+    closeMainA();
+    closeSideA();
+    closeB();
+    expect(deviceBRefreshes, 0);
+    expect(bridge.channels.calls.where((c) => c.method == 'useCodingPlanReset'),
+        isEmpty);
+    expect(
+        bridgeB.channels.calls.where((c) => c.method == 'useCodingPlanReset'),
+        isEmpty);
+  });
 }

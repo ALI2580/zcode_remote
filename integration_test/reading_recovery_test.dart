@@ -99,9 +99,11 @@ void main() {
         boundary.currentContext!.findRenderObject()! as RenderRepaintBoundary;
     final captured = await render.toImage(pixelRatio: 1);
     final bytes = await captured.toByteData(format: ui.ImageByteFormat.png);
-    await File('${environment!['cacheDirectory']}/qa-reading-$phase.png')
-        .writeAsBytes(bytes!.buffer
-            .asUint8List(bytes.offsetInBytes, bytes.lengthInBytes));
+    final output =
+        File('${environment!['cacheDirectory']}/qa-reading-$phase.png');
+    await output.parent.create(recursive: true);
+    await output.writeAsBytes(
+        bytes!.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes));
     captured.dispose();
     debugPrint(
         'QA reading $phase: saved row ${view.anchor}, offset ${view.anchorOffset}; '

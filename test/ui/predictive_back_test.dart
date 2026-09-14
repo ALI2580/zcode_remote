@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:zcode_remote/notifications/task_notification_controller.dart';
+import 'package:zcode_remote/state/client_preferences.dart';
 import 'package:zcode_remote/ui/app.dart';
 import 'package:zcode_remote/ui/notification_settings_page.dart';
 import '../notifications/fake_notification_platform.dart';
@@ -33,9 +34,13 @@ void main() {
   testWidgets(
       'predictive back previews, cancels and commits the actual settings route',
       (tester) async {
+    final preferences = ClientPreferences();
+    await preferences.setLanguage('zh');
+    addTearDown(preferences.dispose);
     final controller =
         TaskNotificationController(platform: FakeNotificationPlatform());
     await tester.pumpWidget(ZcodeRemoteApp(
+        preferences: preferences,
         home: Builder(
             builder: (context) => Scaffold(
                   body: Center(

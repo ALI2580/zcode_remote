@@ -126,6 +126,74 @@ void main() {
     });
   });
 
+  group('plan identity and subscription dates (C2.4 official fields)', () {
+    test('parses productName, expireTime and renewTime from details[0]', () {
+      final snap = EntitlementSnapshot.parse({
+        'provider': {'id': 'builtin:bigmodel-coding-plan'},
+        'quota': {'level': 'pro'},
+        'subscription': {
+          'details': [
+            {
+              'productName': 'GLM Coding Pro',
+              'productId': 'code-pro-year',
+              'expireTime': 1790000000000,
+              'renewTime': '2026-12-31T00:00:00Z',
+            },
+          ],
+        },
+      });
+      expect(snap!.planName, 'GLM Coding Pro');
+      expect(snap.expireTime, 1790000000000);
+      expect(snap.renewTime, isNotNull);
+    });
+
+    test('planName falls back productId, then quota.level, then null', () {
+      final byProductId = EntitlementSnapshot.parse({
+        'quota': {'level': 'pro'},
+        'subscription': {
+          'details': [
+            {'productId': 'code-pro'},
+          ],
+        },
+      });
+      expect(byProductId!.planName, 'code-pro');
+      final byLevel = EntitlementSnapshot.parse({
+        'quota': {'level': 'pro'},
+        'subscription': {
+          'details': [{}],
+        },
+      });
+      expect(byLevel!.planName, 'pro');
+      final none = EntitlementSnapshot.parse({
+        'subscription': {
+          'details': [{}],
+        },
+      });
+      expect(none!.planName, isNull);
+    });
+
+    test('invalid or out-of-range subscription dates stay null', () {
+      final snap = EntitlementSnapshot.parse({
+        'subscription': {
+          'details': [
+            {'expireTime': 'abc', 'renewTime': 0},
+          ],
+        },
+      });
+      expect(snap!.expireTime, isNull);
+      expect(snap.renewTime, isNull);
+      final range = EntitlementSnapshot.parse({
+        'subscription': {
+          'details': [
+            {'expireTime': 9e18, 'renewTime': '1790500000000'},
+          ],
+        },
+      });
+      expect(range!.expireTime, isNull);
+      expect(range.renewTime, isNotNull);
+    });
+  });
+
   group('formatQuotaPercent (IF)', () {
     test('null renders --', () {
       expect(formatQuotaPercent(null), '--');

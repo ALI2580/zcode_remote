@@ -17,6 +17,8 @@ enum ComposerFailure {
   stop,
   queue,
   queueChanged,
+  queueEditConflict,
+  queueEditRestoreFailed,
   command
 }
 
@@ -140,6 +142,7 @@ class ComposerController extends ChangeNotifier {
       _inFlightConfigEpoch != null && _inFlightConfigEpoch != _epoch;
   bool get configuring => _intents.isNotEmpty || _oldConfigPending;
   bool get connected => !_disposed && transport.session.degraded.value == null;
+  String? get connectionIssue => transport.session.degraded.value;
   bool get ready =>
       connected &&
       (sessionId == null || (!_awaitingSnapshot && _state?.ready == true));
@@ -428,6 +431,30 @@ class ComposerController extends ChangeNotifier {
     }
   }
 
+  /// Applies a prepare result fetched by [ComposerStore.refreshScope]. It is
+  /// deliberately separate from [loadOptions] so sibling panes can share one
+  /// transport request and still retain their own draft/config state.
+  Future<void> applyPreparedOptions(WorkspacePrep result) async {
+    if (_disposed) return;
+    final generation = ++_prepGeneration;
+    preparing = true;
+    _notify();
+    try {
+      if (_disposed || generation != _prepGeneration) return;
+      prep = result;
+      if (sessionId == null) {
+        _confirmed = {...options.defaults(), ..._confirmed};
+        store.saveDraftConfig(this, _confirmed);
+      }
+      if (failure == ComposerFailure.preparation) failure = null;
+    } finally {
+      if (!_disposed && generation == _prepGeneration) {
+        preparing = false;
+        _notify();
+      }
+    }
+  }
+
   void _connectionChanged() {
     if (!connected) _awaitingSnapshot = true;
     _notify();
@@ -437,7 +464,11 @@ class ComposerController extends ChangeNotifier {
     usage.invalidate();
     references.invalidate();
     _epoch++;
-    _awaitingSnapshot = sessionId != null;
+    // Bridge recovery waits for the active conversation subscription to apply
+    // its current snapshot before emitting `recovered`. Keep the old rows and
+    // configuration visible while that sync is pending, and only gate a
+    // session when no valid state is available yet.
+    _awaitingSnapshot = sessionId != null && _state?.ready != true;
     _stopProjection = null;
     _configFloor = 0;
     for (final intent in _intents) {
@@ -767,7 +798,8 @@ class ComposerController extends ChangeNotifier {
     }
   }
 
-  Future<bool> queueAction(String action, {String? id, bool? autoDrain}) async {
+  Future<bool> queueAction(String action,
+      {String? id, bool? autoDrain, String? newText, String? beforeId}) async {
     if (!(action == 'sendQueuedNow' ? canSendQueued : canEditQueue) ||
         sessionId == null) {
       return false;
@@ -786,11 +818,75 @@ class ComposerController extends ChangeNotifier {
         'deleteQueueItem' => await transport.deleteQueueItem(sessionId!, id!),
         'sendQueuedNow' => await transport.sendQueuedNow(sessionId!, id!),
         'setAutoDrain' => await transport.setAutoDrain(sessionId!, autoDrain!),
+        'editQueueItem' =>
+          await transport.editQueueItem(sessionId!, id!, newText!),
+        'reorderQueueItem' =>
+          await transport.reorderQueueItem(sessionId!, id!, beforeId),
         _ => throw StateError('unknown-queue-action'),
       };
       if (_disposed) return false;
       if (!_accepted(ack, noop: true)) throw StateError('queue-rejected');
       // Keep server projection authoritative; reserved/promoting entries are locked.
+      return true;
+    } catch (_) {
+      if (!_disposed) failure = ComposerFailure.queue;
+      return false;
+    } finally {
+      if (!_disposed) {
+        queueBusy = false;
+        _notify();
+      }
+    }
+  }
+
+  /// Official queue edit does not mutate the queued row. It deletes the queued
+  /// item and returns its text/attachments to an empty composer so the user can
+  /// edit and resubmit a new item.
+  Future<bool> editQueuedItem(String id) async {
+    if (!canEditQueue || sessionId == null) return false;
+    final item = queue
+        .where((e) =>
+            e['queueItemId'] == id &&
+            (e['dispatch'] as Map?)?['state'] == 'queued')
+        .firstOrNull;
+    if (item == null ||
+        (item['kind'] is String && item['kind'] != 'sendText')) {
+      return false;
+    }
+    if (input.text.trim().isNotEmpty ||
+        input.referenceCount > 0 ||
+        attachments.items.isNotEmpty) {
+      failure = ComposerFailure.queueEditConflict;
+      _notify();
+      return false;
+    }
+    queueBusy = true;
+    failure = null;
+    _notify();
+    final epoch = _epoch;
+    try {
+      final ack = await transport.deleteQueueItem(sessionId!, id);
+      if (_disposed || epoch != _epoch) return false;
+      if (!_accepted(ack, noop: true)) throw StateError('queue-rejected');
+      // A user edit during the round trip wins; never overwrite their draft.
+      if (sessionId == null ||
+          input.text.trim().isNotEmpty ||
+          input.referenceCount > 0 ||
+          attachments.items.isNotEmpty ||
+          composing ||
+          sending) {
+        failure = ComposerFailure.queueEditRestoreFailed;
+        return false;
+      }
+      final text = item['text'];
+      if (text is String && text.isNotEmpty) input.text = text;
+      final attachmentsRaw = item['attachments'];
+      if (attachmentsRaw is List) {
+        attachments.restoreQueued(attachmentsRaw
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList());
+      }
       return true;
     } catch (_) {
       if (!_disposed) failure = ComposerFailure.queue;

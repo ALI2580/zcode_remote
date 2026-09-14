@@ -16,11 +16,16 @@ import 'conversation_view_state.dart';
 import 'workspace_view_state.dart';
 import 'composer_store.dart';
 import 'composer_controller.dart';
+import 'composer_usage.dart';
+import 'client_preferences.dart';
+import 'usage_plan_selection.dart';
 import 'plugin_catalog.dart';
 import 'recovery_collections.dart';
 import 'recovery_journal.dart';
+import 'terminal_sessions.dart';
 import '../attachments/attachment_picker.dart';
 import 'composer_attachments.dart';
+import 'remote_settings.dart';
 
 /// App-owned connections survive route pops and device switches.
 class AppSessions extends ChangeNotifier with WidgetsBindingObserver {
@@ -77,11 +82,124 @@ class AppSessions extends ChangeNotifier with WidgetsBindingObserver {
   late final sidebarStates = RecoveryMap<String, SidebarViewState>(
       _saveRecovery,
       added: (value) => value.onChanged = _saveRecovery);
-  final _pluginCatalogs = <(String, String), PluginCatalog>{};
-  PluginCatalog pluginCatalog(String deviceId, String workspace,
-          BridgeSession bridge, Map<String, dynamic> scope) =>
-      _pluginCatalogs.putIfAbsent((deviceId, workspace),
-          () => PluginCatalog(bridge: bridge, scope: scope));
+  final _pluginCatalogs =
+      <(String, String, BridgeSession, String, String), PluginCatalog>{};
+  // Settings belong to the device + bridge + workspace scope. Keeping these
+  // controllers here lets the settings route come and go without disposing
+  // the controller used by the main and side conversation panes.
+  final _remoteSettings =
+      <(String, String, BridgeSession), RemoteSettingsController>{};
+  // Usage statistics plan selection: one per device/workspace transport, so
+  // the statistics page's Coding Plan source outlives individual pages and is
+  // never driven by a chat composer's model provider.
+  final _usagePlanSelections = <(String, String, ConversationTransport),
+      UsagePlanSelection>{};
+  late final terminalSessions = TerminalSessionStore();
+
+  /// Returns the catalog shared by settings, the workspace plugin store and
+  /// capability projections for one device/workspace/bridge/scope.
+  ///
+  /// A bridge recovery or a changed workspace identity/path gets a fresh
+  /// catalog. The retired catalog is disposed here so late list/readback
+  /// responses cannot write into the replacement. Borrowers must never dispose
+  /// the returned catalog; AppSessions owns its lifetime.
+  PluginCatalog pluginCatalog(
+    String deviceId,
+    String workspace,
+    BridgeSession bridge,
+    Map<String, dynamic> scope, {
+    String? selectedScope,
+    String? workspacePath,
+    String? workspaceIdentity,
+  }) {
+    if (_disposed) throw StateError('app sessions disposed');
+    final resolvedScope = <String, dynamic>{
+      ...scope,
+      if (workspacePath != null && workspacePath.trim().isNotEmpty)
+        'workspacePath': workspacePath.trim(),
+      if (workspaceIdentity != null && workspaceIdentity.trim().isNotEmpty)
+        'workspaceIdentity': workspaceIdentity.trim(),
+      if (selectedScope != null && selectedScope.trim().isNotEmpty)
+        'configScope': selectedScope.trim().toLowerCase(),
+    };
+    final selected = selectedScope?.trim().toLowerCase() ?? '';
+    // `configScope` selects the user/workspace variant. It is deliberately
+    // excluded from the source identity so both variants can coexist for the
+    // same bridge and workspace. A path/identity change still retires every
+    // variant below.
+    final sourceScope = Map<String, dynamic>.from(resolvedScope)
+      ..remove('configScope');
+    final scopeKey = pluginScopeFingerprint(sourceScope);
+    final key = (deviceId, workspace, bridge, scopeKey, selected);
+    // Keep one catalog per selected configScope, while retiring every catalog
+    // from an old bridge or old workspace request scope. User/workspace
+    // settings can therefore be open in separate projections without sharing
+    // the wrong write scope.
+    for (final entry in _pluginCatalogs.entries.toList()) {
+      if (entry.key.$1 != deviceId || entry.key.$2 != workspace) continue;
+      if (entry.key.$3 == bridge && entry.key.$4 == scopeKey) continue;
+      if (entry.key.$3 == bridge && entry.key.$4 != scopeKey) {
+        // A changed path/identity retires all configScope variants for the
+        // old workspace source.
+        entry.value.dispose();
+        _pluginCatalogs.remove(entry.key);
+        continue;
+      }
+      entry.value.dispose();
+      _pluginCatalogs.remove(entry.key);
+    }
+    final existing = _pluginCatalogs[key];
+    if (existing != null) return existing;
+    late final PluginCatalog catalog;
+    catalog = PluginCatalog(
+      bridge: bridge,
+      scope: resolvedScope,
+      selectedScope: selectedScope,
+      onConfirmed: (_) async {
+        // Only a still-current catalog may invalidate this scope's Composer
+        // projection. A retired bridge can finish its RPC, but it cannot
+        // refresh the replacement bridge or another workspace.
+        if (_disposed || !identical(_pluginCatalogs[key], catalog)) return;
+        // The two configScope variants share one remote source. A confirmed
+        // user write can change the effective workspace projection (and the
+        // reverse), so refresh sibling catalogs from that same source. These
+        // are plain readbacks and do not invoke another Composer refresh.
+        final siblings = _pluginCatalogs.entries
+            .where((entry) =>
+                entry.key.$1 == deviceId &&
+                entry.key.$2 == workspace &&
+                entry.key.$3 == bridge &&
+                entry.key.$4 == scopeKey &&
+                !identical(entry.value, catalog))
+            .map((entry) => entry.value)
+            .toList(growable: false);
+        await Future.wait(siblings.map((sibling) => sibling.refresh()));
+        if (_disposed || !identical(_pluginCatalogs[key], catalog)) return;
+        await refreshComposerScope(
+          deviceId: deviceId,
+          workspaceKey: workspace,
+          scopeTransport: bridge.conversation(resolvedScope),
+        );
+      },
+    );
+    _pluginCatalogs[key] = catalog;
+    return catalog;
+  }
+
+  PluginCatalog pluginCatalogForMonitor(
+    WorkspaceMonitor monitor, {
+    String? selectedScope,
+  }) =>
+      pluginCatalog(
+        monitor.source.deviceId,
+        monitor.source.workspaceKey,
+        monitor.bridge,
+        monitor.scope,
+        selectedScope: selectedScope,
+        workspacePath: monitor.source.workspacePath,
+        workspaceIdentity: monitor.source.workspaceKey,
+      );
+
   late final composers = ComposerStore(
       drafts: drafts,
       viewStates: conversationViewStates,
@@ -255,6 +373,69 @@ class AppSessions extends ChangeNotifier with WidgetsBindingObserver {
               monitor.source.workspaceKey == workspaceKey)
           .firstOrNull;
   DeviceSession? sessionOf(String id) => _sessions[id];
+
+  /// Returns the settings controller shared by every view of one remote
+  /// device/bridge/workspace. A bridge recovery keeps the same controller and
+  /// therefore retains the last confirmed snapshot while it re-reads.
+  RemoteSettingsController remoteSettingsFor({
+    required String deviceId,
+    required String workspaceKey,
+    required BridgeSession bridge,
+  }) {
+    if (_disposed) throw StateError('app sessions disposed');
+    final key = (deviceId, workspaceKey, bridge);
+    return _remoteSettings.putIfAbsent(
+        key,
+        () => RemoteSettingsController(
+              session: bridge,
+              scopeKey: '$deviceId|$workspaceKey',
+            ));
+  }
+
+  /// Convenience seam for settings pages opened from a workspace shell.
+  RemoteSettingsController remoteSettingsForMonitor(WorkspaceMonitor monitor) =>
+      remoteSettingsFor(
+          deviceId: monitor.source.deviceId,
+          workspaceKey: monitor.source.workspaceKey,
+          bridge: monitor.bridge);
+
+  /// Statistics-owned Coding Plan source selection for one device/workspace
+  /// transport (official `sidebarUsageCodingPlanProviderPreference`).
+  UsagePlanSelection usagePlanSelectionFor({
+    required String deviceId,
+    required String workspaceKey,
+    required ConversationTransport transport,
+    ClientPreferences? preferences,
+  }) {
+    if (_disposed) throw StateError('app sessions disposed');
+    final key = (deviceId, workspaceKey, transport);
+    return _usagePlanSelections.putIfAbsent(key, () {
+      final selection = UsagePlanSelection(
+          usage: ComposerUsage(transport), preferences: preferences);
+      return selection;
+    });
+  }
+
+  /// Refreshes all already-open Composer controllers in one device/workspace
+  /// scope after a confirmed provider/model write. The store deduplicates by
+  /// transport so main, side, and any draft view sharing the same bridge make
+  /// one authoritative prepare request.
+  Future<void> refreshComposerScope({
+    required String deviceId,
+    required String workspaceKey,
+    ConversationTransport? scopeTransport,
+  }) =>
+      composers.refreshScope(
+        deviceId: deviceId,
+        workspaceKey: workspaceKey,
+        scopeTransport: scopeTransport,
+      );
+
+  Future<void> refreshComposerScopeForMonitor(WorkspaceMonitor monitor) =>
+      refreshComposerScope(
+          deviceId: monitor.source.deviceId,
+          workspaceKey: monitor.source.workspaceKey,
+          scopeTransport: monitor.bridge.conversation(monitor.scope));
   DeviceSession sessionFor(Device device) {
     if (_disposed) throw StateError('app sessions disposed');
     if (device.params == null) throw const FormatException('设备凭据不可用，请重新添加链接');
@@ -299,6 +480,7 @@ class AppSessions extends ChangeNotifier with WidgetsBindingObserver {
     for (final id in _knownDeviceIds.difference(devices.keys.toSet())) {
       _forgottenDeviceIds.add(id);
       composers.forgetDevice(id);
+      terminalSessions.forgetDevice(id);
       lastLocations.remove(id);
       sidebarStates.remove(id);
       bool belongs(String key) {
@@ -319,12 +501,23 @@ class AppSessions extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void disconnect(String id) {
+    for (final entry in _remoteSettings.entries.toList()) {
+      if (entry.key.$1 != id) continue;
+      entry.value.dispose();
+      _remoteSettings.remove(entry.key);
+    }
+    for (final entry in _usagePlanSelections.entries.toList()) {
+      if (entry.key.$1 != id) continue;
+      entry.value.dispose();
+      _usagePlanSelections.remove(entry.key);
+    }
     for (final entry in _pluginCatalogs.entries.toList()) {
       if (entry.key.$1 != id) continue;
       entry.value.dispose();
       _pluginCatalogs.remove(entry.key);
     }
     composers.disconnect(id);
+    terminalSessions.forgetDevice(id);
     for (final entry in _monitors.entries.toList()) {
       if (entry.value.source.deviceId == id) {
         entry.value.dispose();
@@ -369,6 +562,15 @@ class AppSessions extends ChangeNotifier with WidgetsBindingObserver {
       disconnect(id);
     }
     composers.dispose();
+    for (final controller in _remoteSettings.values.toList()) {
+      controller.dispose();
+    }
+    _remoteSettings.clear();
+    for (final selection in _usagePlanSelections.values.toList()) {
+      selection.dispose();
+    }
+    _usagePlanSelections.clear();
+    unawaited(terminalSessions.dispose());
     notifications.dispose();
     super.dispose();
   }
@@ -382,6 +584,7 @@ class WorkspaceMonitor extends ChangeNotifier {
       required this.notifications})
       : catalog = WorkspaceTaskCatalog(scope) {
     bridge.recovered.addListener(_onRecovered);
+    bridge.degraded.addListener(_onBridgeHealthChanged);
   }
   final BridgeSession bridge;
   final Map<String, dynamic> scope;
@@ -391,6 +594,26 @@ class WorkspaceMonitor extends ChangeNotifier {
   final _mutating = <String>{};
   bool isMutating(String id) => _mutating.contains(id);
   SessionsIndexSubscription? _subscription;
+  final _staleSnapshotTaskIds = <String>{};
+
+  /// Whether the official `task_snapshot_invalidated {taskId}` notice is
+  /// pending re-sync for this task (view layers should distrust cached
+  /// rows while this is true).
+  bool isSnapshotStale(String taskId) => _staleSnapshotTaskIds.contains(taskId);
+
+  /// Named handling for the official `task_snapshot_invalidated {taskId}`
+  /// notice: the server-side snapshot for this task is stale, so mark it,
+  /// surface it to listeners, and re-sync the task lists. Repeated notices
+  /// for an already-marked task coalesce into the in-flight refresh.
+  void handleTaskSnapshotInvalidated(String taskId) {
+    if (taskId.isEmpty) return;
+    final added = _staleSnapshotTaskIds.add(taskId);
+    if (added) notifyListeners();
+    unawaited(refreshTasks().whenComplete(() {
+      if (_staleSnapshotTaskIds.remove(taskId)) notifyListeners();
+    }));
+  }
+
   Timer? _retry;
   bool _disposed = false;
   bool _starting = false;
@@ -398,7 +621,11 @@ class WorkspaceMonitor extends ChangeNotifier {
   bool _channelReady = false;
   int _channelGeneration = 0;
   String? get error => _error;
-  bool get ready => (_subscription?.state.ready ?? false) || _channelReady;
+  bool get ready =>
+      bridge.degraded.value == null &&
+      ((_subscription?.state.ready ?? false) || _channelReady);
+  bool get remoteOperationsAvailable => bridge.degraded.value == null;
+  String? get connectionIssue => bridge.degraded.value;
   List<SessionEntry> get tasks => catalog.visible;
   List<SessionEntry> get archivedTasks => catalog.archiveList;
   bool isPinned(String id) => catalog.isPinned(id);
@@ -440,7 +667,12 @@ class WorkspaceMonitor extends ChangeNotifier {
 
   void _onRecovered() => unawaited(refreshTasks());
 
+  void _onBridgeHealthChanged() {
+    if (!_disposed) notifyListeners();
+  }
+
   Future<void> refreshTasks() async {
+    if (_disposed || !remoteOperationsAvailable) return;
     final generation = ++_channelGeneration;
     final pinRevision = catalog.pinRevision;
     final archiveRevision = catalog.archiveRevision;
@@ -509,6 +741,10 @@ class WorkspaceMonitor extends ChangeNotifier {
     if (_disposed || !_mutating.add(task.sessionId)) {
       throw StateError('task mutation unavailable');
     }
+    if (!remoteOperationsAvailable) {
+      _mutating.remove(task.sessionId);
+      throw StateError('remote connection unavailable');
+    }
     notifyListeners();
     try {
       await bridge.channels.call(Channels.zcodeTask, method, [
@@ -529,6 +765,7 @@ class WorkspaceMonitor extends ChangeNotifier {
     _disposed = true;
     _channelGeneration++;
     bridge.recovered.removeListener(_onRecovered);
+    bridge.degraded.removeListener(_onBridgeHealthChanged);
     _retry?.cancel();
     final sub = _subscription;
     sub?.state.removeListener(_onState);

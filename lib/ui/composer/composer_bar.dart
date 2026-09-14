@@ -12,10 +12,23 @@ import 'composer_toolbar.dart';
 import 'composer_queue.dart';
 import 'attachment_strip.dart';
 import 'reference_panel.dart';
+import '../voice_input_button.dart';
+import '../voice_model_manager.dart';
+import '../../voice/voice_transcriber_sherpa.dart';
+import '../../state/voice_input.dart';
+import '../../voice/voice_errors.dart';
 
 class ComposerBar extends StatefulWidget {
-  const ComposerBar({super.key, required this.controller});
+  const ComposerBar({
+    super.key,
+    required this.controller,
+    this.onManageModels,
+    @visibleForTesting this.voiceInput,
+  });
   final ComposerController controller;
+  final VoidCallback? onManageModels;
+  @visibleForTesting
+  final VoiceInputController? voiceInput;
   @override
   State<ComposerBar> createState() => _ComposerBarState();
 }
@@ -25,11 +38,14 @@ class _ComposerBarState extends State<ComposerBar> {
   bool _wasComposing = false;
   bool _hovered = false;
   Timer? _commitGuard;
+  VoiceInputController? _voice;
+  bool _ownsVoice = true;
   @override
   void initState() {
     super.initState();
     widget.controller.input.addListener(_editingChanged);
     _focus.addListener(_focusChanged);
+    _ensureVoice();
   }
 
   void _focusChanged() => setState(() {});
@@ -37,12 +53,36 @@ class _ComposerBarState extends State<ComposerBar> {
   @override
   void didUpdateWidget(ComposerBar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller != widget.controller) {
+    if (oldWidget.controller != widget.controller ||
+        oldWidget.voiceInput != widget.voiceInput) {
       oldWidget.controller.input.removeListener(_editingChanged);
       widget.controller.input.addListener(_editingChanged);
       _wasComposing = false;
       _commitGuard?.cancel();
+      _ensureVoice();
     }
+  }
+
+  void _ensureVoice() {
+    final previous = _voice;
+    if (previous != null) {
+      if (_ownsVoice) {
+        previous.dispose();
+      } else if (previous.isBusy) {
+        unawaited(previous.cancel());
+      }
+    }
+    final provided = widget.voiceInput;
+    if (provided != null && identical(provided.composer, widget.controller)) {
+      _voice = provided;
+      _ownsVoice = false;
+      return;
+    }
+    _voice = VoiceInputController(
+      composer: widget.controller,
+      transcriber: SherpaVoiceTranscriber(),
+    );
+    _ownsVoice = true;
   }
 
   void _editingChanged() {
@@ -152,23 +192,51 @@ class _ComposerBarState extends State<ComposerBar> {
     if (mounted && widget.controller == controller) _focus.requestFocus();
   }
 
+  void _openVoiceModels() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: VoiceModelManager(),
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     widget.controller.input.removeListener(_editingChanged);
     _commitGuard?.cancel();
     _focus.dispose();
+    if (_ownsVoice) _voice?.dispose();
+    _voice = null;
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-      listenable: Listenable.merge(
-          [widget.controller, widget.controller.store.recovery]),
+      listenable: Listenable.merge([
+        widget.controller,
+        widget.controller.store.recovery,
+        if (_voice != null) _voice,
+      ]),
       builder: (context, _) {
         final controller = widget.controller;
         final ink = ZInk.of(Theme.of(context).colorScheme);
+        final issue = controller.connectionIssue;
+        final recoveryFailed = issue?.startsWith('reopen-failed:') == true;
         final status = !controller.connected
-            ? uiText(context, '正在恢复连接…', 'Reconnecting…')
+            ? recoveryFailed
+                ? uiText(context, '工作区恢复失败，仍在尝试…',
+                    'Workspace recovery failed; still trying…')
+                : issue == 'user-disconnected' ||
+                        issue == 'credentials-invalid' ||
+                        issue == 'connection-failed' ||
+                        issue == 'kicked'
+                    ? uiText(context, '连接暂不可用', 'Connection unavailable')
+                    : uiText(context, '正在恢复连接…', 'Reconnecting…')
             : controller.preparing
                 ? uiText(context, '正在读取配置…', 'Loading configuration…')
                 : controller.configuring
@@ -196,10 +264,20 @@ class _ComposerBarState extends State<ComposerBar> {
                                               uiText(context, '处理中', 'Working'),
                                           }
                                         : null;
+        // Scaffold removes viewInsets from its body MediaQuery while resizing
+        // the body. Read the FlutterView metrics so the composer can detect a
+        // genuinely short keyboard viewport without compacting tall layouts.
+        final view = View.of(context);
+        final viewHeight = view.physicalSize.height / view.devicePixelRatio;
+        final keyboardInset = view.viewInsets.bottom / view.devicePixelRatio;
+        final compactForKeyboard =
+            keyboardInset > 0 && viewHeight - keyboardInset < 320;
         return SafeArea(
             top: false,
             child: Padding(
-                padding: const EdgeInsets.only(top: 8, bottom: 16),
+                padding: EdgeInsets.only(
+                    top: compactForKeyboard ? 0 : 8,
+                    bottom: compactForKeyboard ? 0 : 16),
                 child: ConversationColumn(
                     child: LayoutBuilder(
                         builder: (context, region) =>
@@ -249,6 +327,14 @@ class _ComposerBarState extends State<ComposerBar> {
                                         style: TextStyle(
                                             fontSize: 12,
                                             color: ink.subtlest))),
+                              if (_voice?.phase == VoiceInputPhase.error)
+                                _VoiceErrorBanner(
+                                    voice: _voice!,
+                                    onManageModels: _openVoiceModels),
+                              if (_voice?.isBusy == true)
+                                _VoiceStatusBanner(
+                                    voice: _voice!,
+                                    compact: compactForKeyboard),
                               if (controller.pickingAttachments)
                                 TextButton(
                                     onPressed: cancelAttachmentPick,
@@ -269,7 +355,8 @@ class _ComposerBarState extends State<ComposerBar> {
                                               color: _focus.hasFocus || _hovered
                                                   ? ink.borderHover
                                                   : ink.border)),
-                                      padding: const EdgeInsets.all(12),
+                                      padding: EdgeInsets.all(
+                                          compactForKeyboard ? 1 : 12),
                                       child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
@@ -285,7 +372,8 @@ class _ComposerBarState extends State<ComposerBar> {
                                                 controller: controller.input,
                                                 focusNode: _focus,
                                                 minLines: 1,
-                                                maxLines: 6,
+                                                maxLines:
+                                                    compactForKeyboard ? 1 : 6,
                                                 keyboardType:
                                                     TextInputType.multiline,
                                                 textInputAction:
@@ -295,11 +383,15 @@ class _ComposerBarState extends State<ComposerBar> {
                                                 style: TextStyle(
                                                     color: ink.text,
                                                     fontSize: 14,
-                                                    height: 1.5),
+                                                    height: compactForKeyboard
+                                                        ? 1.2
+                                                        : 1.5),
                                                 decoration: InputDecoration(
-                                                    constraints:
-                                                        const BoxConstraints(
-                                                            minHeight: 52),
+                                                    constraints: BoxConstraints(
+                                                        minHeight:
+                                                            compactForKeyboard
+                                                                ? 24
+                                                                : 52),
                                                     hintText: uiText(context,
                                                         '输入消息…', 'Message…'),
                                                     hintStyle: TextStyle(
@@ -311,23 +403,179 @@ class _ComposerBarState extends State<ComposerBar> {
                                                         InputBorder.none,
                                                     filled: false,
                                                     isDense: true,
-                                                    contentPadding:
-                                                        const EdgeInsets.only(
-                                                            bottom: 12))),
+                                                    contentPadding: EdgeInsets.only(
+                                                        bottom:
+                                                            compactForKeyboard
+                                                                ? 0
+                                                                : 12))),
                                             ComposerToolbar(
                                                 controller: controller,
                                                 containerWidth: region.maxWidth,
                                                 onSend: _send,
                                                 onAddAttachment:
                                                     _pickAttachments,
+                                                voiceInput: _voice == null
+                                                    ? null
+                                                    : VoiceInputButton(
+                                                        voice: _voice!,
+                                                        onDone: () => _focus
+                                                            .requestFocus(),
+                                                      ),
                                                 onTrigger: (symbol) {
                                                   controller.references
                                                       .insertTrigger(symbol);
                                                   _focus.requestFocus();
-                                                }),
+                                                },
+                                                onManageModels:
+                                                    widget.onManageModels),
                                           ]))),
                             ])))));
       });
+}
+
+class _VoiceErrorBanner extends StatelessWidget {
+  const _VoiceErrorBanner({
+    required this.voice,
+    required this.onManageModels,
+  });
+
+  final VoiceInputController voice;
+  final VoidCallback onManageModels;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = ZInk.of(Theme.of(context).colorScheme);
+    final english = Localizations.localeOf(context).languageCode != 'zh';
+    final message = voiceFailureMessage(voice.errorKind, english: english) ??
+        voice.error ??
+        uiText(context, '语音输入失败', 'Voice input failed');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Container(
+        key: const ValueKey('voice-error'),
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: ink.card,
+          border: Border.all(color: ink.border),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(children: [
+          Expanded(
+            child: Text(message,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: ink.diffRemoved)),
+          ),
+          const SizedBox(width: 6),
+          TextButton(
+            onPressed: voice.start,
+            style: TextButton.styleFrom(
+                minimumSize: const Size(0, 30),
+                padding: const EdgeInsets.symmetric(horizontal: 8)),
+            child: Text(uiText(context, '重试', 'Retry')),
+          ),
+          if (voice.canManageModels)
+            TextButton(
+              onPressed: onManageModels,
+              style: TextButton.styleFrom(
+                  minimumSize: const Size(0, 30),
+                  padding: const EdgeInsets.symmetric(horizontal: 8)),
+              child: Text(uiText(context, '模型管理', 'Models')),
+            ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _VoiceStatusBanner extends StatelessWidget {
+  const _VoiceStatusBanner({required this.voice, this.compact = false});
+
+  final VoiceInputController voice;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = ZInk.of(Theme.of(context).colorScheme);
+    final status = switch (voice.phase) {
+      VoiceInputPhase.requesting =>
+        uiText(context, '正在准备语音输入…', 'Preparing voice input…'),
+      VoiceInputPhase.recording => uiText(context, '正在录音…', 'Listening…'),
+      VoiceInputPhase.recognizing => uiText(context, '正在识别…', 'Recognizing…'),
+      VoiceInputPhase.idle || VoiceInputPhase.error => '',
+    };
+    if (status.isEmpty) return const SizedBox.shrink();
+    final preview = voice.partial;
+    return Padding(
+      padding: EdgeInsets.only(bottom: compact ? 0 : 6),
+      child: Container(
+        key: const ValueKey('voice-status'),
+        width: double.infinity,
+        padding:
+            EdgeInsets.symmetric(horizontal: 10, vertical: compact ? 1 : 6),
+        decoration: BoxDecoration(
+          color: ink.card,
+          border: Border.all(color: ink.border),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.graphic_eq, size: 18, color: ink.subtlest),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    status,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: ink.text),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                TextButton(
+                  key: const ValueKey('composer-voice-cancel'),
+                  onPressed: voice.cancel,
+                  style: TextButton.styleFrom(
+                    minimumSize: Size(0, compact ? 28 : 30),
+                    tapTargetSize: compact
+                        ? MaterialTapTargetSize.shrinkWrap
+                        : MaterialTapTargetSize.padded,
+                    visualDensity: compact
+                        ? VisualDensity.compact
+                        : VisualDensity.standard,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  child: Text(uiText(context, '取消', 'Cancel')),
+                ),
+              ],
+            ),
+            if (preview.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 26, top: 2),
+                child: Semantics(
+                  label: uiText(context, '最新语音预览', 'Latest voice preview'),
+                  child: Text(
+                    preview,
+                    key: const ValueKey('voice-preview'),
+                    maxLines: compact ? 1 : 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: compact ? 12 : 13,
+                      height: compact ? 1.2 : 1.35,
+                      color: ink.text,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _Failure extends StatelessWidget {
@@ -352,6 +600,14 @@ class _Failure extends StatelessWidget {
           'Queue action was not confirmed. Check its status.'),
       ComposerFailure.queueChanged => uiText(
           context, '队列已变化，请重新确认', 'The queue changed. Please confirm again.'),
+      ComposerFailure.queueEditConflict => uiText(
+          context,
+          '请先发送或清空当前草稿，再编辑待发消息。',
+          'Send or clear the current draft before editing a queued message.'),
+      ComposerFailure.queueEditRestoreFailed => uiText(
+          context,
+          '未能把待发消息退回输入框。请重试。',
+          "Couldn't return the queued message to the composer. Try again."),
       ComposerFailure.command => uiText(
           context,
           '请检查能力参数：目标需要正文，计划快捷指令不能附带上下文或附件。',

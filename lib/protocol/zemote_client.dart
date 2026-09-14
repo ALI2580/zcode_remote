@@ -39,7 +39,22 @@ class ZemoteClient {
 
   void _log(String line) => onLog?.call(line);
 
-  Future<void> connect() => relay.start();
+  int _recoveryGeneration = 0;
+  bool _intentionallyClosed = false;
+
+  Future<void> connect() async {
+    _intentionallyClosed = false;
+    _recoveryGeneration++;
+    if (_activeBridges.isNotEmpty) {
+      _needsBridgeRecovery = true;
+      for (final session in _activeBridges) {
+        if (session.degraded.value == null) {
+          session.degraded.value = 'reconnecting';
+        }
+      }
+    }
+    await relay.start();
+  }
 
   bool _needsBridgeRecovery = false;
 
@@ -48,13 +63,30 @@ class ZemoteClient {
   /// recovered — mirrors the web client's connection recovery.
   void _onRelayState() {
     final state = relay.state;
-    if (state == RelayState.reconnecting || state == RelayState.error) {
+    if (state == RelayState.reconnecting ||
+        state == RelayState.error ||
+        state == RelayState.kicked ||
+        state == RelayState.closed ||
+        // A relay can remain socket-connected while the desktop temporarily
+        // moves an already paired mobile back to waiting. The bridge is no
+        // longer usable in that interval, so gate commands and surface the
+        // same recovery state until matched returns.
+        state == RelayState.waiting) {
+      _recoveryGeneration++;
       if (_activeBridges.isNotEmpty) {
         _needsBridgeRecovery = true;
         // Mark bridges degraded immediately so in-flight commands gate on
         // recovery instead of timing out on the now-dead socket/bridge.
         for (final s in _activeBridges) {
-          if (s.degraded.value == null) s.degraded.value = 'reconnecting';
+          final terminalReason = switch (state) {
+            RelayState.kicked => 'kicked',
+            RelayState.closed => 'user-disconnected',
+            RelayState.error => 'connection-failed',
+            _ => null,
+          };
+          if (terminalReason != null || s.degraded.value == null) {
+            s.degraded.value = terminalReason ?? 'reconnecting';
+          }
         }
       }
       return;
@@ -66,57 +98,95 @@ class ZemoteClient {
   }
 
   Future<void> _recoverActiveBridges() async {
+    final generation = _recoveryGeneration;
+    if (_intentionallyClosed || relay.state != RelayState.paired) return;
     _log('[bridge] recovering ${_activeBridges.length} bridge(s)');
     for (final session in List<BridgeSession>.from(_activeBridges)) {
       if (session.degraded.value == null) continue;
-      if (_recoveringBridges.contains(session)) continue;
-      _recoveringBridges.add(session);
-      unawaited(_recoverBridgeWithRetry(session));
+      if (_recoveringBridges[session] != null) continue;
+      _recoveringBridges[session] = generation;
+      unawaited(_recoverBridgeWithRetry(session, generation));
     }
   }
 
-  final Set<BridgeSession> _recoveringBridges = {};
+  final Map<BridgeSession, int> _recoveringBridges = {};
 
   /// Retries bridge recovery until it succeeds, so a degraded bridge never
   /// strands commands ("can't send after reconnect"). A relay re-drop during
   /// the retries just prolongs the loop.
-  Future<void> _recoverBridgeWithRetry(BridgeSession session) async {
+  Future<void> _recoverBridgeWithRetry(
+      BridgeSession session, int generation) async {
     final recoveryId = _reqId('recovery');
     try {
-      for (var attempt = 1; !session._disposed; attempt++) {
-        if (session._disposed) return;
-        if (await _recoverBridgeOnce(session, recoveryId)) return;
-        if (session._disposed) return;
+      for (var attempt = 1;
+          !session._disposed &&
+              generation == _recoveryGeneration &&
+              !_intentionallyClosed &&
+              relay.state == RelayState.paired;
+          attempt++) {
+        if (await _recoverBridgeOnce(session, recoveryId, generation)) {
+          return;
+        }
+        if (session._disposed ||
+            generation != _recoveryGeneration ||
+            _intentionallyClosed) {
+          return;
+        }
         _log('[bridge] recovery attempt $attempt failed, retrying');
         await Future.delayed(recoveryRetryDelay);
       }
     } finally {
-      _recoveringBridges.remove(session);
+      if (_recoveringBridges[session] == generation) {
+        _recoveringBridges.remove(session);
+      }
+      if (!_intentionallyClosed && generation != _recoveryGeneration) {
+        unawaited(_recoverActiveBridges());
+      }
     }
   }
 
   /// Returns true when the bridge is healthy again.
   Future<bool> _recoverBridgeOnce(
-      BridgeSession session, String recoveryId) async {
+      BridgeSession session, String recoveryId, int generation) async {
+    if (_intentionallyClosed || generation != _recoveryGeneration) {
+      return false;
+    }
     final workspaceKey = session.bridge['workspaceKey'] as String?;
     if (workspaceKey == null) {
-      // Nothing to reconnect; clear the degraded flag so commands unblock.
-      session.degraded.value = null;
-      return true;
+      throw StateError('bridge workspace identity unavailable');
     }
     session.degraded.value = 'recovering';
     // Official Z4t T -> C -> P always opens a fresh bridge after a transport
     // failure. workspace-reconnect-request reconnects a workspace backend; it
     // does not recreate the channel transport or its subscriptions.
     try {
-      await _reopenBridge(session, workspaceKey, recoveryId);
+      await _reopenBridge(session, workspaceKey, recoveryId, generation);
       await session.channels.ready.timeout(const Duration(seconds: 30));
-      if (session._disposed) return false;
-      session.recovered.value += 1;
+      if (session._disposed ||
+          _intentionallyClosed ||
+          generation != _recoveryGeneration) {
+        return false;
+      }
+      session.recoveryStarting.value += 1;
+      // Conversation and sessions-index subscriptions are restored from the
+      // recovered signal. Do not advertise a healthy bridge until their new
+      // handshake/subscribe acknowledgements have completed.
+      await session.waitForSubscriptionsHealthy(
+          timeout: const Duration(seconds: 45));
+      if (session._disposed ||
+          _intentionallyClosed ||
+          generation != _recoveryGeneration) {
+        return false;
+      }
       session.degraded.value = null;
+      session.recovered.value += 1;
       return true;
     } catch (e) {
-      if (session._disposed) return false;
+      if (session._disposed ||
+          _intentionallyClosed ||
+          generation != _recoveryGeneration) {
+        return false;
+      }
       _log('[bridge] reopen failed: $e');
       session.degraded.value = 'reopen-failed: $e';
       return false;
@@ -349,18 +419,18 @@ class ZemoteClient {
   /// Reopens a degraded/dead bridge: new `workspace-bridge-open` (fresh
   /// bridgeSessionId, bumped generation, carries recoveryId), then swaps
   /// the stack into the existing [BridgeSession].
-  Future<void> _reopenBridge(
-      BridgeSession session, String workspaceKey, String recoveryId) async {
+  Future<void> _reopenBridge(BridgeSession session, String workspaceKey,
+      String recoveryId, int recoveryGeneration) async {
     final bridgeSessionId = _reqId('bridge');
-    final generation = ++_bridgeGeneration;
+    final bridgeGeneration = ++_bridgeGeneration;
     final requestId = _reqId('workspace-bridge');
-    _log('[bridge] reopen $workspaceKey (gen $generation)');
+    _log('[bridge] reopen $workspaceKey (gen $bridgeGeneration)');
     final res = await request(
       {
         'zcode_type': 'workspace-bridge-open',
         'requestId': requestId,
         'bridgeSessionId': bridgeSessionId,
-        'bridgeGeneration': generation,
+        'bridgeGeneration': bridgeGeneration,
         'recoveryId': recoveryId,
         'workspaceKey': workspaceKey,
         if (session.initialTaskId != null) 'taskId': session.initialTaskId,
@@ -373,7 +443,11 @@ class ZemoteClient {
     if (res['zcode_type'] == 'workspace-bridge-error') {
       throw StateError('workspace-bridge-error: ${res['error'] ?? res}');
     }
-    if (session._disposed) throw StateError('bridge disposed during recovery');
+    if (session._disposed ||
+        _intentionallyClosed ||
+        recoveryGeneration != _recoveryGeneration) {
+      throw StateError('bridge recovery superseded');
+    }
     final bridge =
         (res['bridge'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
     _attachStack(session, bridgeSessionId, bridge);
@@ -418,6 +492,21 @@ class ZemoteClient {
 
   void pokeRelay() => relay.poke();
 
+  /// Intentionally stop the relay while keeping bridge identity and cached
+  /// subscriptions. A later [connect] re-pairs the same client and runs the
+  /// normal bridge reopen path, so callers do not strand an old monitor.
+  Future<void> close({String reason = 'user-disconnected'}) async {
+    _intentionallyClosed = true;
+    _recoveryGeneration++;
+    if (_activeBridges.isNotEmpty) {
+      _needsBridgeRecovery = true;
+      for (final session in _activeBridges) {
+        session.degraded.value = 'user-disconnected';
+      }
+    }
+    await relay.close(reason: reason);
+  }
+
   Future<void> dispose() async {
     relay.stateListenable.removeListener(_onRelayState);
     await _payloadSub?.cancel();
@@ -438,6 +527,10 @@ class BridgeSession {
   final void Function(BridgeSession) _onDispose;
   bool _disposed = false;
   final _healthWaiters = <Completer<void>>{};
+
+  /// Internal edge used to tell live subscriptions to rebuild. The public
+  /// [recovered] counter advances only after those subscriptions confirm.
+  final recoveryStarting = ValueSignal<int>(0);
 
   /// Non-null while the bridge is degraded (rpc-transport-fault etc.).
   final ValueSignal<String?> degraded = ValueSignal(null);
@@ -522,6 +615,14 @@ class BridgeSession {
     );
   }
 
+  Future<void> waitForSubscriptionsHealthy(
+      {Duration timeout = const Duration(seconds: 45)}) async {
+    await Future.wait([
+      for (final conversation in _conversations.values)
+        conversation.waitForSubscriptionsHealthy(timeout: timeout),
+    ]).timeout(timeout);
+  }
+
   void dispose() {
     if (_disposed) return;
     _disposed = true;
@@ -532,6 +633,7 @@ class BridgeSession {
     }
     _healthWaiters.clear();
     degraded.dispose();
+    recoveryStarting.dispose();
     recovered.dispose();
     _transport.dispose();
     _onDispose(this);

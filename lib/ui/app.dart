@@ -37,7 +37,7 @@ class ZcodeRemoteApp extends StatelessWidget {
         return MediaQuery(
             data: media.copyWith(
                 textScaler:
-                    ClientTextScaler(media.textScaler, prefs?.textScale ?? 1)),
+                    ClientTextScaler(media.textScaler, prefs?.uiFontScale ?? 1)),
             child: RuntimeAudit.quotaReadOnly
                 ? Banner(
                     message: '额度只读验收',

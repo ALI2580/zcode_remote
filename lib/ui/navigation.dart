@@ -6,28 +6,63 @@ import '../state/device_store.dart';
 import '../state/workspace_catalog.dart';
 import 'device_directory.dart';
 import 'settings_center_page.dart';
+import 'settings_navigation_result.dart';
 import 'workspace_shell.dart';
 
 final _workspaceRoutes = Expando<List<_WorkspaceRoute>>();
+int _nextSearchRequestId = 0;
+
+class _WorkspaceTarget {
+  const _WorkspaceTarget({
+    required this.device,
+    required this.workspace,
+    required this.monitor,
+    required this.sessionId,
+    this.initialTitle,
+    this.searchSnippet,
+    this.searchSnippetIndex,
+    this.searchQuery,
+    this.searchRequestId,
+  });
+
+  final Device device;
+  final WorkspaceDescriptor workspace;
+  final WorkspaceMonitor monitor;
+  final String? sessionId;
+  final String? initialTitle;
+  final String? searchSnippet;
+  final int? searchSnippetIndex;
+  final String? searchQuery;
+  final int? searchRequestId;
+}
 
 class _WorkspaceRoute extends MaterialPageRoute<void> {
-  _WorkspaceRoute(
-      {required this.deviceId,
-      required this.workspaceKey,
-      required this.monitor,
-      required this.sessionId,
-      required super.builder});
-  final String deviceId;
-  final String workspaceKey;
-  final WorkspaceMonitor monitor;
-  String? sessionId;
+  _WorkspaceRoute({required _WorkspaceTarget target, required super.builder})
+      : target = ValueNotifier(target);
+  final ValueNotifier<_WorkspaceTarget> target;
+  String get deviceId => target.value.device.id;
+  String get workspaceKey => target.value.workspace.key;
+  WorkspaceMonitor get monitor => target.value.monitor;
+  String? get sessionId => target.value.sessionId;
+
+  void updateTarget(_WorkspaceTarget value) => target.value = value;
+
+  @override
+  void dispose() {
+    target.dispose();
+    super.dispose();
+  }
 }
 
 Future<void> openDeviceWorkspace(BuildContext context, AppSessions sessions,
     ClientPreferences preferences, Device device,
     {TaskTarget? target,
     WorkspaceDescriptor? workspace,
-    bool replace = false}) async {
+    String? searchSnippet,
+    int? searchSnippetIndex,
+    String? searchQuery,
+    bool replace = false,
+    bool preserveCaller = false}) async {
   final generation = sessions.beginNavigation();
   final navigator = Navigator.of(context);
   final route = ModalRoute.of(context);
@@ -70,6 +105,31 @@ Future<void> openDeviceWorkspace(BuildContext context, AppSessions sessions,
       : chosen.key == session.initialWorkspaceKey
           ? session.initialTaskId
           : null;
+  final nextTarget = _WorkspaceTarget(
+      device: device,
+      workspace: chosen,
+      monitor: monitor,
+      sessionId: id?.isNotEmpty == true ? id : null,
+      initialTitle:
+          previous?.workspaceKey == chosen.key ? previous?.title : null,
+      searchSnippet: searchSnippet,
+      searchSnippetIndex: searchSnippetIndex,
+      searchQuery: searchQuery,
+      searchRequestId: (searchQuery?.trim().isNotEmpty == true ||
+              searchSnippet?.trim().isNotEmpty == true)
+          ? ++_nextSearchRequestId
+          : null);
+  if (_canSwitchInline(context) && route is _WorkspaceRoute) {
+    await sessions.store.touch(device.id);
+    if (!context.mounted ||
+        !sessions.navigationIsCurrent(generation) ||
+        route.isCurrent != true ||
+        navigator.userGestureInProgress) {
+      return;
+    }
+    route.updateTarget(nextTarget);
+    return;
+  }
   final routes = _workspaceRoutes[navigator] ??= [];
   final existing = routes
       .where((page) =>
@@ -81,20 +141,34 @@ Future<void> openDeviceWorkspace(BuildContext context, AppSessions sessions,
       .firstOrNull;
   late final _WorkspaceRoute page;
   page = _WorkspaceRoute(
-      deviceId: device.id,
-      workspaceKey: chosen.key,
-      monitor: monitor,
-      sessionId: id?.isNotEmpty == true ? id : null,
-      builder: (_) => WorkspaceShell(
-          device: device,
-          workspace: chosen,
-          monitor: monitor,
-          sessions: sessions,
-          preferences: preferences,
-          sessionId: id?.isNotEmpty == true ? id : null,
-          onSessionCreated: (value) => page.sessionId = value,
-          initialTitle:
-              previous?.workspaceKey == chosen.key ? previous?.title : null));
+      target: nextTarget,
+      builder: (_) => ValueListenableBuilder<_WorkspaceTarget>(
+          valueListenable: page.target,
+          builder: (context, value, _) => WorkspaceShell(
+              device: value.device,
+              workspace: value.workspace,
+              monitor: value.monitor,
+              sessions: sessions,
+              preferences: preferences,
+              sessionId: value.sessionId,
+              searchSnippet: value.searchSnippet,
+              searchSnippetIndex: value.searchSnippetIndex,
+              searchQuery: value.searchQuery,
+              searchRequestId: value.searchRequestId,
+              onSessionCreated: (sessionId) {
+                if (!identical(page.target.value, value)) return;
+                page.updateTarget(_WorkspaceTarget(
+                    device: page.target.value.device,
+                    workspace: page.target.value.workspace,
+                    monitor: page.target.value.monitor,
+                    sessionId: sessionId,
+                    initialTitle: page.target.value.initialTitle,
+                    searchSnippet: page.target.value.searchSnippet,
+                    searchSnippetIndex: page.target.value.searchSnippetIndex,
+                    searchQuery: page.target.value.searchQuery,
+                    searchRequestId: page.target.value.searchRequestId));
+              },
+              initialTitle: value.initialTitle)));
   await sessions.store.touch(device.id);
   if (!context.mounted ||
       !sessions.navigationIsCurrent(generation) ||
@@ -102,7 +176,7 @@ Future<void> openDeviceWorkspace(BuildContext context, AppSessions sessions,
       navigator.userGestureInProgress) {
     return;
   }
-  if (existing != null) {
+  if (existing != null && !preserveCaller) {
     navigator.popUntil((route) => identical(route, existing));
     return;
   }
@@ -114,6 +188,9 @@ Future<void> openDeviceWorkspace(BuildContext context, AppSessions sessions,
     navigator.push(page);
   }
 }
+
+bool _canSwitchInline(BuildContext context) =>
+    MediaQuery.sizeOf(context).width >= 640;
 
 void showDeviceDirectory(
     BuildContext context, AppSessions sessions, ClientPreferences preferences) {
@@ -135,17 +212,29 @@ void showDeviceDirectory(
                           context, sessions, preferences))))));
 }
 
-void showSettingsCenter(
+Future<void> showSettingsCenter(
     BuildContext context, AppSessions sessions, ClientPreferences preferences,
-    {String section = 'general'}) {
+    {WorkspaceMonitor? remoteMonitor, String section = 'general'}) {
   sessions.beginNavigation();
-  Navigator.push(
+  final result = Navigator.push<SettingsNavigationResult>(
       context,
-      MaterialPageRoute<void>(
+      MaterialPageRoute<SettingsNavigationResult>(
           builder: (context) => SettingsCenterPage(
               preferences: preferences,
               sessions: sessions,
+              remoteMonitor: remoteMonitor,
               initialSection: section,
+              onOpenDevice: (device) => openDeviceWorkspace(
+                  context, sessions, preferences, device, preserveCaller: true),
               onManageDevices: () =>
                   showDeviceDirectory(context, sessions, preferences))));
+  return result.then((request) async {
+    if (request == null || !context.mounted) return;
+    final device = sessions.store.devices
+        .where((item) => item.id == request.target.deviceId)
+        .firstOrNull;
+    if (device == null) return;
+    await openDeviceWorkspace(context, sessions, preferences, device,
+        target: request.target);
+  });
 }

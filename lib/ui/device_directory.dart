@@ -14,11 +14,13 @@ class DeviceDirectory extends StatefulWidget {
       required this.store,
       required this.sessions,
       required this.onOpen,
-      required this.onSettings});
+      required this.onSettings,
+      this.embedded = false});
   final DeviceStore store;
   final AppSessions sessions;
   final Future<void> Function(Device) onOpen;
   final VoidCallback onSettings;
+  final bool embedded;
   @override
   State<DeviceDirectory> createState() => _DeviceDirectoryState();
 }
@@ -97,6 +99,134 @@ class _DeviceDirectoryState extends State<DeviceDirectory> {
     if (confirmed == true) await widget.store.remove(device.id);
   }
 
+  Widget _directoryContent(
+      BuildContext context, InkTokens ink, List<Device> devices) {
+    return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(children: [
+            Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                  Text(uiText(context, '你的设备', 'Your devices'),
+                      style: TextStyle(
+                          fontSize: 24,
+                          color: ink.text,
+                          fontWeight: FontWeight.w500)),
+                  const SizedBox(height: 6),
+                  Text(
+                      uiText(context, '回到正在进行的工作。',
+                          'Return to the work in progress.'),
+                      style: TextStyle(color: ink.subtlest)),
+                ])),
+            IconButton(
+                tooltip: uiText(context, '添加设备', 'Add device'),
+                onPressed: _adding ? null : _add,
+                icon: LucideIcon('plus', size: 20, color: ink.text))
+          ]),
+          const SizedBox(height: 28),
+          if (!widget.store.loaded)
+            const Center(child: CircularProgressIndicator()),
+          if (widget.store.loaded && devices.isEmpty)
+            Padding(
+                padding: const EdgeInsets.symmetric(vertical: 36),
+                child: Column(children: [
+                  LucideIcon('monitor', size: 32, color: ink.subtlest),
+                  const SizedBox(height: 20),
+                  Text(
+                      uiText(
+                          context,
+                          '在桌面 ZCode 开启远程控制，然后添加连接链接。',
+                          'Enable remote control in desktop ZCode, then add its connection link.'),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: ink.subtlest)),
+                  const SizedBox(height: 20),
+                  FilledButton(
+                      onPressed: _add,
+                      child: Text(uiText(
+                          context, '添加第一台设备', 'Add your first device')))
+                ])),
+          for (final device in devices) ...[
+            Divider(height: 1, color: ink.border),
+            Builder(builder: (context) {
+              final session = widget.sessions.sessionOf(device.id);
+              final status = deviceConnectionStatus(context, session);
+              return ListTile(
+                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  leading: Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                          border: Border.all(color: ink.border),
+                          borderRadius: BorderRadius.circular(10)),
+                      child: Center(
+                          child: LucideIcon('monitor',
+                              size: 18, color: ink.text))),
+                  title: Text(device.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w500)),
+                  subtitle: Text(status,
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: session?.connected == true
+                              ? ink.diffAdded
+                              : ink.subtlest)),
+                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                    if (_opening == device.id)
+                      const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                    PopupMenuButton<String>(
+                        tooltip: uiText(context, '设备操作', 'Device actions'),
+                        icon: LucideIcon('ellipsis',
+                            size: 18, color: ink.subtlest),
+                        onSelected: (value) async {
+                          try {
+                            switch (value) {
+                              case 'rename':
+                                await _rename(device);
+                              case 'link':
+                                await _add(replacing: device);
+                              case 'disconnect':
+                                widget.sessions.disconnect(device.id);
+                              case 'remove':
+                                await _remove(device);
+                            }
+                          } catch (_) {
+                            if (context.mounted) {
+                              _message(uiText(context, '操作失败，请重试',
+                                  'Operation failed. Try again.'));
+                            }
+                          }
+                        },
+                        itemBuilder: (context) => [
+                              PopupMenuItem(
+                                  value: 'rename',
+                                  child: Text(
+                                      uiText(context, '重命名', 'Rename'))),
+                              PopupMenuItem(
+                                  value: 'link',
+                                  child: Text(uiText(context, '更新连接链接',
+                                      'Update connection link'))),
+                              if (session != null)
+                                PopupMenuItem(
+                                    value: 'disconnect',
+                                    child: Text(uiText(
+                                        context, '断开连接', 'Disconnect'))),
+                              PopupMenuItem(
+                                  value: 'remove',
+                                  child: Text(uiText(context, '移除', 'Remove'))),
+                            ])
+                  ]),
+                  onTap: () => _open(device));
+            }),
+          ],
+        ]);
+  }
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
       listenable: Listenable.merge([widget.store, widget.sessions]),
@@ -104,6 +234,8 @@ class _DeviceDirectoryState extends State<DeviceDirectory> {
         final ink = ZInk.of(Theme.of(context).colorScheme);
         final devices = widget.store.devices.toList()
           ..sort((a, b) => b.lastUsedAt.compareTo(a.lastUsedAt));
+        final content = _directoryContent(context, ink, devices);
+        if (widget.embedded) return content;
         return Column(children: [
           Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
@@ -122,168 +254,15 @@ class _DeviceDirectoryState extends State<DeviceDirectory> {
                       constraints: const BoxConstraints(maxWidth: 760),
                       child: ListView(
                           padding: const EdgeInsets.fromLTRB(24, 36, 24, 24),
-                          children: [
-                            Row(children: [
-                              Expanded(
-                                  child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                    Text(
-                                        uiText(context, '你的设备', 'Your devices'),
-                                        style: TextStyle(
-                                            fontSize: 24,
-                                            color: ink.text,
-                                            fontWeight: FontWeight.w500)),
-                                    const SizedBox(height: 6),
-                                    Text(
-                                        uiText(context, '回到正在进行的工作。',
-                                            'Return to the work in progress.'),
-                                        style: TextStyle(color: ink.subtlest)),
-                                  ])),
-                              IconButton(
-                                  tooltip:
-                                      uiText(context, '添加设备', 'Add device'),
-                                  onPressed: _adding ? null : _add,
-                                  icon: LucideIcon('plus',
-                                      size: 20, color: ink.text))
-                            ]),
-                            const SizedBox(height: 28),
-                            if (!widget.store.loaded)
-                              const Center(child: CircularProgressIndicator()),
-                            if (widget.store.loaded && devices.isEmpty)
-                              Padding(
-                                  padding:
-                                      const EdgeInsets.symmetric(vertical: 36),
-                                  child: Column(children: [
-                                    LucideIcon('monitor',
-                                        size: 32, color: ink.subtlest),
-                                    const SizedBox(height: 20),
-                                    Text(
-                                        uiText(
-                                            context,
-                                            '在桌面 ZCode 开启远程控制，然后添加连接链接。',
-                                            'Enable remote control in desktop ZCode, then add its connection link.'),
-                                        textAlign: TextAlign.center,
-                                        style: TextStyle(color: ink.subtlest)),
-                                    const SizedBox(height: 20),
-                                    FilledButton(
-                                        onPressed: _add,
-                                        child: Text(uiText(context, '添加第一台设备',
-                                            'Add your first device')))
-                                  ])),
-                            for (final device in devices) ...[
-                              Divider(height: 1, color: ink.border),
-                              Builder(builder: (context) {
-                                final session =
-                                    widget.sessions.sessionOf(device.id);
-                                final status =
-                                    deviceConnectionStatus(context, session);
-                                return ListTile(
-                                    contentPadding: const EdgeInsets.symmetric(
-                                        vertical: 10),
-                                    leading: Container(
-                                        width: 38,
-                                        height: 38,
-                                        decoration: BoxDecoration(
-                                            border:
-                                                Border.all(color: ink.border),
-                                            borderRadius:
-                                                BorderRadius.circular(10)),
-                                        child: Center(
-                                            child: LucideIcon('monitor',
-                                                size: 18, color: ink.text))),
-                                    title: Text(device.label,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                            fontWeight: FontWeight.w500)),
-                                    subtitle: Text(status,
-                                        style: TextStyle(
-                                            fontSize: 12,
-                                            color: session?.connected == true
-                                                ? ink.diffAdded
-                                                : ink.subtlest)),
-                                    trailing: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          if (_opening == device.id)
-                                            const SizedBox(
-                                                width: 16,
-                                                height: 16,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                        strokeWidth: 2)),
-                                          PopupMenuButton<String>(
-                                              tooltip: uiText(context, '设备操作',
-                                                  'Device actions'),
-                                              icon: LucideIcon('ellipsis',
-                                                  size: 18,
-                                                  color: ink.subtlest),
-                                              onSelected: (value) async {
-                                                try {
-                                                  switch (value) {
-                                                    case 'rename':
-                                                      await _rename(device);
-                                                    case 'link':
-                                                      await _add(
-                                                          replacing: device);
-                                                    case 'disconnect':
-                                                      widget.sessions
-                                                          .disconnect(
-                                                              device.id);
-                                                    case 'remove':
-                                                      await _remove(device);
-                                                  }
-                                                } catch (_) {
-                                                  if (context.mounted) {
-                                                    _message(uiText(
-                                                        context,
-                                                        '操作失败，请重试',
-                                                        'Operation failed. Try again.'));
-                                                  }
-                                                }
-                                              },
-                                              itemBuilder: (context) => [
-                                                    PopupMenuItem(
-                                                        value: 'rename',
-                                                        child: Text(uiText(
-                                                            context,
-                                                            '重命名',
-                                                            'Rename'))),
-                                                    PopupMenuItem(
-                                                        value: 'link',
-                                                        child: Text(uiText(
-                                                            context,
-                                                            '更新连接链接',
-                                                            'Update connection link'))),
-                                                    if (session != null)
-                                                      PopupMenuItem(
-                                                          value: 'disconnect',
-                                                          child: Text(uiText(
-                                                              context,
-                                                              '断开连接',
-                                                              'Disconnect'))),
-                                                    PopupMenuItem(
-                                                        value: 'remove',
-                                                        child: Text(uiText(
-                                                            context,
-                                                            '移除',
-                                                            'Remove'))),
-                                                  ])
-                                        ]),
-                                    onTap: () => _open(device));
-                              }),
-                            ],
-                          ])))),
+                          children: [content])))),
           Align(
               alignment: Alignment.centerLeft,
               child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
                   child: TextButton.icon(
                       onPressed: widget.onSettings,
-                      icon:
-                          LucideIcon('settings', size: 16, color: ink.subtlest),
+                      icon: LucideIcon('settings',
+                          size: 16, color: ink.subtlest),
                       label: Text(uiText(context, '设置', 'Settings'),
                           style: TextStyle(color: ink.subtlest))))),
         ]);

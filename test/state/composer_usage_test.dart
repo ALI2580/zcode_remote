@@ -108,6 +108,37 @@ void main() {
     expect(transport.quotaCalls.last['projectId'], isNull);
   });
 
+  test('an account with no subscribed team products becomes unavailable',
+      () async {
+    final transport = FeatureBridge().conversationTransport;
+    final usage = ComposerUsage(transport);
+    addTearDown(usage.dispose);
+    transport.families['modelProviderFamilySelectedKeys'] = {
+      'bigmodel': 'team-plan:$_coding:old-product:0'
+    };
+    transport.teamProductsHandler = (_) async => {
+          'productList': [
+            {
+              'productId': 'expired-product',
+              'subscribed': false,
+              'family': 'bigmodel',
+              'teamProjects': [
+                {'organizationId': 'org', 'projectId': 'project'}
+              ],
+            }
+          ],
+        };
+    usage.selectProvider(_coding);
+    await usage.refresh();
+
+    expect(usage.sourceUnavailable, isTrue);
+    expect(usage.failed, isTrue);
+    expect(usage.source, isNull);
+    expect(usage.snapshot, isNull);
+    expect(transport.quotaCalls.single['organizationId'], isNull);
+    expect(transport.quotaCalls.single['projectId'], isNull);
+  });
+
   test('late team resolution cannot replace a newly selected provider',
       () async {
     final transport = FeatureBridge().conversationTransport;

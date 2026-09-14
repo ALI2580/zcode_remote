@@ -89,7 +89,12 @@ class FakeBridge implements BridgeSession {
   @override
   final recovered = ValueSignal<int>(0);
   @override
+  final recoveryStarting = ValueSignal<int>(0);
+  @override
   final degraded = ValueSignal<String?>(null);
+  @override
+  Future<void> waitHealthy(
+      {Duration timeout = const Duration(seconds: 45)}) async {}
   late final conversationTransport = FakeConversationTransport(this);
   @override
   ConversationTransport conversation(Map<String, dynamic> scope,
@@ -117,6 +122,7 @@ class FakeConversationTransport extends ConversationTransport {
   Future<dynamic> Function(String?, String, Map<String, dynamic>)?
       commandHandler;
   Future<WorkspacePrep> Function()? prepHandler;
+  Future<ConversationSubscription> Function(String sessionId)? subscribeHandler;
   @override
   Future<WorkspacePrep> prepareWorkspace({bool refresh = false}) async =>
       prepHandler == null
@@ -141,6 +147,10 @@ class FakeConversationTransport extends ConversationTransport {
 
   @override
   Future<ConversationSubscription> subscribe(String sessionId) async {
+    if (subscribeHandler != null) {
+      subscriptions.update(sessionId, (v) => v + 1, ifAbsent: () => 1);
+      return await subscribeHandler!(sessionId);
+    }
     subscriptions.update(sessionId, (v) => v + 1, ifAbsent: () => 1);
     return FakeConversationSubscription(
         states.putIfAbsent(

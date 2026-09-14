@@ -162,6 +162,55 @@ void main() {
         hasLength(1));
   });
 
+  test('multiple uploads keep two active and queue the remaining files',
+      () async {
+    final gate = Completer<void>();
+    bridge.conversationTransport.uploadHandler = () => gate.future;
+    draft.attachments
+        .add([file('one.txt'), file('two.txt'), file('three.txt')]);
+    await settle();
+    expect(
+        draft.attachments.items
+            .where((e) => e.phase == AttachmentPhase.uploading)
+            .length,
+        2);
+    expect(
+        draft.attachments.items
+            .where((e) => e.phase == AttachmentPhase.waitingSession)
+            .length,
+        1);
+    expect(bridge.conversationTransport.uploads, hasLength(2));
+    gate.complete();
+    await settle();
+    expect(draft.attachments.pending, isFalse);
+    expect(bridge.conversationTransport.uploads, hasLength(3));
+  });
+
+  test('unavailable attachments block sending and preview reports recovery',
+      () async {
+    final unavailable = PickedAttachment(
+        name: 'missing.txt',
+        mime: 'text/plain',
+        size: 4,
+        read: () => Future.error(const AttachmentUnavailable()));
+    draft.input.text = 'with missing attachment';
+    draft.attachments.add([file('ready.txt'), unavailable]);
+    await settle();
+    expect(draft.attachments.items.first.phase, AttachmentPhase.ready);
+    expect(draft.attachments.items.last.phase, AttachmentPhase.failed);
+    expect(draft.attachments.items.last.unavailable, isTrue);
+    expect(draft.canSend, isFalse);
+    expect(await draft.send(), ComposerSendResult.blocked);
+    expect(bridge.conversationTransport.uploads, hasLength(1));
+    expect(
+        bridge.conversationTransport.commands
+            .where((e) => e.type == 'sendText'),
+        isEmpty);
+    final missing = draft.attachments.items.last;
+    await expectLater(draft.attachments.preview(missing),
+        throwsA(isA<AttachmentUnavailable>()));
+  });
+
   test('same task IDs keep device attachments and late sends isolated',
       () async {
     final otherBridge = FeatureBridge();

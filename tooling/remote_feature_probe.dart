@@ -4,7 +4,9 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcode_remote/protocol/channel_client.dart';
 import 'package:zcode_remote/protocol/connection_params.dart';
+import 'package:zcode_remote/protocol/conversation.dart';
 import 'package:zcode_remote/protocol/entitlement.dart';
+import 'package:zcode_remote/protocol/file_changes.dart';
 import 'package:zcode_remote/protocol/zemote_client.dart';
 
 /// Opt-in read-only evidence. Output excludes links, task content, identifiers,
@@ -16,6 +18,20 @@ void main() {
       Platform.environment['ZCODE_PROBE_STATISTICS_ONLY'] == 'true';
   final connectionOnly =
       Platform.environment['ZCODE_PROBE_CONNECTION_ONLY'] == 'true';
+  final fileChangesOnly =
+      Platform.environment['ZCODE_PROBE_FILE_CHANGES_ONLY'] == 'true';
+  final gitSummaryOnly =
+      Platform.environment['ZCODE_PROBE_GIT_SUMMARY_ONLY'] == 'true';
+  final rewindPreviewOnly =
+      Platform.environment['ZCODE_PROBE_REWIND_PREVIEW_ONLY'] == 'true';
+  final settingsOnly =
+      Platform.environment['ZCODE_PROBE_SETTINGS_ONLY'] == 'true';
+  final mcpStatusOnly =
+      Platform.environment['ZCODE_PROBE_MCP_STATUS_ONLY'] == 'true';
+  final interactionsOnly =
+      Platform.environment['ZCODE_PROBE_INTERACTIONS_ONLY'] == 'true';
+  final modelProviderOnly =
+      Platform.environment['ZCODE_PROBE_MODEL_PROVIDER_ONLY'] == 'true';
   final alias = Platform.environment['ZCODE_PROBE_ALIAS'];
   final label = const ['ALI', 'ROG-STRIX'].contains(alias) ? alias : null;
   test('official feature data sources (read-only)', () async {
@@ -43,6 +59,101 @@ void main() {
           ..sort();
       }
       if (workspaces.isEmpty) return;
+      if (rewindPreviewOnly) {
+        stage = 'workspace rewind sweep';
+        final previews = <Map<String, dynamic>>[];
+        var workspacesScanned = 0;
+        var sessionsScanned = 0;
+        var changeSummaryCandidates = 0;
+        var failedWorkspaces = 0;
+        for (final workspace in workspaces) {
+          final scope = <String, dynamic>{
+            if (workspace['workspacePath'] is String)
+              'workspacePath': workspace['workspacePath'],
+            if (workspace['workspaceIdentity'] is String)
+              'workspaceIdentity': workspace['workspaceIdentity'],
+          };
+          final key =
+              '${workspace['workspaceIdentity'] ?? workspace['workspacePath']}';
+          BridgeSession? bridge;
+          try {
+            bridge = await client.openBridge(key);
+            final transport = bridge.conversation(scope);
+            workspacesScanned++;
+            stage = 'sessions index for rewind sweep';
+            final index = await transport.subscribeSessionsIndex();
+            await _ready(index.state, () => index.state.ready);
+            for (final task in index.state.list.take(12)) {
+              sessionsScanned++;
+              stage = 'conversation rewind sweep';
+              ConversationSubscription? sub;
+              try {
+                sub = await transport.subscribe(task.sessionId);
+                final conversationSub = sub;
+                await _ready(
+                    conversationSub.state, () => conversationSub.state.ready);
+                final row = conversationSub.state.rows
+                    .where((row) => row['kind'] == 'changeSummary')
+                    .firstOrNull;
+                if (row == null) continue;
+                changeSummaryCandidates++;
+                final rowId = row['rowId'];
+                final entityId = row['entityId'];
+                if (rowId is! int) {
+                  previews.add({'rowIdInvalid': true});
+                  continue;
+                }
+                final target = <String, dynamic>{
+                  'rowId': rowId,
+                  if (entityId != null) 'entityId': entityId,
+                };
+                final raw = await transport.fileRewindPreview(
+                  task.sessionId,
+                  target: target,
+                  baseRevision: conversationSub.state.revision,
+                  baseLogEpoch: conversationSub.state.logEpoch,
+                );
+                final parsed = parseFileRewindPreview(raw);
+                previews.add({
+                  'rowId': true,
+                  'entityId': entityId != null,
+                  'canApply': parsed.canApply,
+                  'safeCount': parsed.safeFiles.length,
+                  'unsafeCount': parsed.unsafeFiles.length,
+                  'ignoredCount': parsed.ignoredFiles.length,
+                  'problems': parsed.problems.length,
+                });
+              } catch (error) {
+                previews.add({
+                  'readFailed': true,
+                  'error': _safeError(error),
+                });
+              } finally {
+                await sub?.dispose();
+              }
+              if (previews.length >= 3) break;
+            }
+            await index.dispose();
+          } catch (error) {
+            failedWorkspaces++;
+            previews.add({
+              'workspaceReadFailed': true,
+              'error': _safeError(error),
+            });
+          } finally {
+            bridge?.dispose();
+          }
+          if (previews.length >= 3) break;
+        }
+        report['rewindWorkspaceSweep'] = {
+          'workspacesScanned': workspacesScanned,
+          'sessionsScanned': sessionsScanned,
+          'changeSummaryCandidates': changeSummaryCandidates,
+          'failedWorkspaces': failedWorkspaces,
+          'previews': previews,
+        };
+        return;
+      }
       final workspace = workspaces
               .where((e) => '${e['workspacePath']}'
                   .replaceAll('\\', '/')
@@ -75,7 +186,308 @@ void main() {
           _count('files', transport.workspaceFiles()),
           _count('skills', transport.skillReferences(null)),
           _count('plugins', transport.pluginReferences(null)),
+          _count('sessions', transport.sessionReferences()),
         ]);
+        report['slashCommands'] = [
+          for (final command in prep.slashCommands)
+            {'name': command.name, 'source': command.source},
+        ];
+        return;
+      }
+      if (fileChangesOnly) {
+        stage = 'sessions index';
+        final index = await transport.subscribeSessionsIndex();
+        await _ready(index.state, () => index.state.ready);
+        final attempts = <Map<String, dynamic>>[];
+        var scanned = 0;
+        for (final task in index.state.list.take(8)) {
+          scanned++;
+          stage = 'conversation file changes';
+          ConversationSubscription? sub;
+          try {
+            sub = await transport.subscribe(task.sessionId);
+            final conversationSub = sub;
+            await _ready(
+                conversationSub.state, () => conversationSub.state.ready);
+            final rows = conversationSub.state.rows
+                .where((row) => row['kind'] == 'changeSummary')
+                .take(2)
+                .toList();
+            if (rows.isEmpty) {
+              attempts.add({'changeSummaryRows': 0});
+              continue;
+            }
+            for (final row in rows) {
+              final rowId = row['rowId'];
+              final entityId = row['entityId'];
+              if (rowId is! int) {
+                attempts.add({'rowIdInvalid': true});
+                continue;
+              }
+              final target = <String, dynamic>{
+                'rowId': rowId,
+                if (entityId != null) 'entityId': entityId,
+              };
+              try {
+                final raw = await transport.fileChanges(
+                  task.sessionId,
+                  target: target,
+                  baseRevision: conversationSub.state.revision,
+                  baseLogEpoch: conversationSub.state.logEpoch,
+                );
+                final parsed = parseFileChanges(raw);
+                attempts.add({
+                  'rowId': true,
+                  'entityId': entityId != null,
+                  'files': parsed.files,
+                  'additions': parsed.additions,
+                  'deletions': parsed.deletions,
+                  'state': parsed.state,
+                  'fileState': parsed.fileState,
+                  'problems': parsed.problems.length,
+                  'shape': _shape(raw),
+                });
+              } catch (error) {
+                attempts.add({
+                  'readFailed': true,
+                  'error': _safeError(error),
+                });
+              }
+            }
+            if (attempts.length >= 3) break;
+          } finally {
+            await sub?.dispose();
+          }
+        }
+        report['scannedTasks'] = scanned;
+        report['fileChangesAttempts'] = attempts;
+        await index.dispose();
+        return;
+      }
+      if (gitSummaryOnly) {
+        stage = 'git summary';
+        await bridge.channels.ready.timeout(const Duration(seconds: 15));
+        final raw = await bridge.channels.call(
+          Channels.git,
+          'refresh',
+          [
+            {
+              'workspacePath': scope['workspacePath'],
+              if (scope['workspaceIdentity'] != null)
+                'workspaceIdentity': scope['workspaceIdentity'],
+              'includeIdentity': false,
+              'includeBranchComparison': false,
+            }
+          ],
+          timeout: const Duration(seconds: 20),
+        );
+        final summary =
+            raw is Map && raw['summary'] is Map ? raw['summary'] as Map : null;
+        report['gitSummary'] = {
+          'present': summary != null,
+          'fields': summary == null
+              ? <String>[]
+              : summary.keys.map((key) => '$key').toList()
+            ..sort(),
+          'gitAvailable': summary?['isGitAvailable'] == true,
+          'repository': summary?['isRepository'] == true,
+          'dirty': summary?['isDirty'] == true,
+          'ahead': summary?['ahead'] is num,
+          'behind': summary?['behind'] is num,
+          'branchType': summary?['headRefType'],
+        };
+        return;
+      }
+      if (rewindPreviewOnly) {
+        stage = 'sessions index';
+        final index = await transport.subscribeSessionsIndex();
+        await _ready(index.state, () => index.state.ready);
+        final previews = <Map<String, dynamic>>[];
+        var scanned = 0;
+        for (final task in index.state.list.take(8)) {
+          scanned++;
+          stage = 'conversation rewind preview';
+          ConversationSubscription? sub;
+          try {
+            sub = await transport.subscribe(task.sessionId);
+            final conversationSub = sub;
+            await _ready(
+                conversationSub.state, () => conversationSub.state.ready);
+            final row = conversationSub.state.rows
+                .where((row) => row['kind'] == 'changeSummary')
+                .firstOrNull;
+            if (row == null) continue;
+            final rowId = row['rowId'];
+            final entityId = row['entityId'];
+            if (rowId is! int) {
+              previews.add({'rowIdInvalid': true});
+              continue;
+            }
+            final target = <String, dynamic>{
+              'rowId': rowId,
+              if (entityId != null) 'entityId': entityId,
+            };
+            final raw = await transport.fileRewindPreview(
+              task.sessionId,
+              target: target,
+              baseRevision: conversationSub.state.revision,
+              baseLogEpoch: conversationSub.state.logEpoch,
+            );
+            final parsed = parseFileRewindPreview(raw);
+            previews.add({
+              'rowId': true,
+              'entityId': entityId != null,
+              'canApply': parsed.canApply,
+              'safeCount': parsed.safeFiles.length,
+              'unsafeCount': parsed.unsafeFiles.length,
+              'ignoredCount': parsed.ignoredFiles.length,
+              'problems': parsed.problems.length,
+            });
+          } catch (error) {
+            previews.add({
+              'readFailed': true,
+              'error': _safeError(error),
+            });
+          } finally {
+            await sub?.dispose();
+          }
+          if (previews.length >= 3) break;
+        }
+        report['scannedTasks'] = scanned;
+        report['rewindPreviews'] = previews;
+        await index.dispose();
+        return;
+      }
+      if (interactionsOnly) {
+        stage = 'sessions index';
+        final index = await transport.subscribeSessionsIndex();
+        await _ready(index.state, () => index.state.ready);
+        final kinds = <String, int>{};
+        final samples = <Map<String, dynamic>>[];
+        var scanned = 0;
+        for (final task in index.state.list.take(12)) {
+          scanned++;
+          stage = 'conversation pending interactions';
+          ConversationSubscription? sub;
+          try {
+            sub = await transport.subscribe(task.sessionId);
+            final conversationSub = sub;
+            await _ready(
+                conversationSub.state, () => conversationSub.state.ready);
+            for (final interaction
+                in conversationSub.state.pendingInteractions) {
+              final kind = '${interaction['kind'] ?? 'unknown'}';
+              kinds[kind] = (kinds[kind] ?? 0) + 1;
+              final payload =
+                  (interaction['payload'] as Map?)?.cast<String, dynamic>() ??
+                      const {};
+              final payloadKind = '${payload['kind'] ?? 'unknown'}';
+              final options = payload['options'] is List
+                  ? (payload['options'] as List).length
+                  : null;
+              final questions = payload['questions'] is List
+                  ? (payload['questions'] as List).length
+                  : null;
+              final auto = interaction['autoResolution'] as Map?;
+              final hookItems = payload['items'] is List
+                  ? (payload['items'] as List)
+                      .whereType<Map>()
+                      .map((item) => item['trustState'] ?? 'unknown')
+                      .toList()
+                  : null;
+              samples.add({
+                'kind': kind,
+                'payloadKind': payloadKind,
+                'payloadKeys': payload.keys.map((key) => key).toList()..sort(),
+                if (options != null) 'optionCount': options,
+                if (questions != null) 'questionCount': questions,
+                if (auto?['state'] != null)
+                  'autoResolutionState': auto?['state'],
+                if (hookItems != null) 'hookTrustStates': hookItems,
+              });
+            }
+          } finally {
+            await sub?.dispose();
+          }
+        }
+        report['scannedTasks'] = scanned;
+        report['interactionKinds'] = kinds;
+        report['interactionSamples'] = samples;
+        await index.dispose();
+        return;
+      }
+      if (modelProviderOnly) {
+        stage = 'model provider getAll';
+        await bridge.channels.ready.timeout(const Duration(seconds: 15));
+        final raw = await bridge.channels.call(
+          Channels.modelProvider,
+          'getAll',
+          const [],
+          timeout: const Duration(seconds: 20),
+        );
+        report['modelProviderWire'] = _shapeOf(raw);
+        return;
+      }
+      if (settingsOnly) {
+        stage = 'settings read';
+        final raw = await bridge.channels.call(
+          Channels.setting,
+          'get',
+          const [],
+          timeout: const Duration(seconds: 20),
+        );
+        if (raw is Map) {
+          final map = raw.cast<String, dynamic>();
+          String type(Object? value) => value == null
+              ? 'null'
+              : value is bool
+                  ? 'bool'
+                  : value is num
+                      ? 'number'
+                      : value is String
+                          ? 'string'
+                          : value is List
+                              ? 'list'
+                              : 'map';
+          report['settingsWire'] = {
+            'fieldCount': map.length,
+            'fields': {
+              for (final entry in map.entries) entry.key: type(entry.value),
+            },
+            'providerFamilyShape': {
+              for (final key in [
+                'modelProviderFamilyModes',
+                'modelProviderFamilySelectedKeys'
+              ])
+                key: map[key] is Map
+                    ? {
+                        'count': (map[key] as Map).length,
+                        'keys': (map[key] as Map).keys.map((e) => '$e').toList()
+                          ..sort(),
+                      }
+                    : null,
+            },
+            'knownFieldTypes': {
+              for (final key in [
+                'terminalInheritSystemProfile',
+                'terminalFontFamily',
+                'integratedTerminalShell',
+                'embeddedBrowserAllowInsecureCertificates',
+                'taskAutoArchiveEnabled',
+                'taskAutoArchiveOlderThanDays',
+                'messageStreamShowReasoning',
+                'zcodeInteractionBehavior',
+                'modelProviderFamilyModes',
+                'modelProviderFamilySelectedKeys'
+              ])
+                if (map.containsKey(key)) key: type(map[key]),
+            },
+          };
+        } else {
+          report['settingsWire'] = {
+            'responseType': '${raw.runtimeType}',
+          };
+        }
         return;
       }
       if (filesOnly) {
@@ -110,6 +522,41 @@ void main() {
                 message.contains('enoent') || message.contains('eacces')
           };
         }
+        return;
+      }
+      if (mcpStatusOnly) {
+        stage = 'mcp status';
+        final raw = await bridge.channels.call(
+          Channels.mcpSync,
+          'listWorkspaceMcpServerStatuses',
+          [
+            {
+              'workspacePath': scope['workspacePath'],
+              if (scope['workspaceIdentity'] != null)
+                'workspaceIdentity': scope['workspaceIdentity'],
+              'mode': 'status',
+            }
+          ],
+          timeout: const Duration(seconds: 30),
+        );
+        final statuses = raw is Map && raw['statuses'] is List
+            ? (raw['statuses'] as List).whereType<Map>().toList()
+            : const <Map>[];
+        report['mcpStatus'] = {
+          'responseType': '${raw.runtimeType}',
+          'responseKeys': raw is Map ? raw.keys.map((e) => '$e').toList() : [],
+          'count': statuses.length,
+          'entries': [
+            for (final status in statuses.take(20))
+              {
+                'fields': status.keys.map((e) => '$e').toList()..sort(),
+                'name': status['name'] is String,
+                'status': status['status'],
+                'enabled': status['enabled'] is bool,
+                'toolCount': status['toolCount'] is num,
+              }
+          ],
+        };
         return;
       }
       stage = 'family selection';
@@ -277,7 +724,7 @@ void main() {
       await client.dispose();
       await Directory('build/artifacts').create(recursive: true);
       await File(
-              'build/artifacts/${statisticsOnly ? 'official-usage-statistics-probe' : connectionOnly ? 'official-connection-probe' : filesOnly ? 'official-parity-files-probe' : 'official-parity-probe'}${label == null ? '' : '-$label'}.json')
+              'build/artifacts/${statisticsOnly ? 'official-usage-statistics-probe' : fileChangesOnly ? 'official-file-changes-probe' : rewindPreviewOnly ? 'official-rewind-preview-probe' : settingsOnly ? 'official-settings-probe' : mcpStatusOnly ? 'official-mcp-status-probe' : connectionOnly ? 'official-connection-probe' : gitSummaryOnly ? 'official-git-summary-probe' : filesOnly ? 'official-parity-files-probe' : modelProviderOnly ? 'official-model-provider-probe' : interactionsOnly ? 'official-interactions-probe' : 'official-parity-probe'}${label == null ? '' : '-$label'}.json')
           .writeAsString(const JsonEncoder.withIndent('  ').convert(report));
       // ignore: avoid_print
       print(
@@ -341,6 +788,30 @@ Future<Map<String, dynamic>> _count(
           message.contains('enoent') || message.contains('eacces'),
     };
   }
+}
+
+Map<String, dynamic> _shapeOf(Object? value) {
+  if (value == null) return {'type': 'null'};
+  if (value is bool || value is num || value is String) {
+    return {'type': '${value.runtimeType}'};
+  }
+  if (value is List) {
+    return {
+      'type': 'list',
+      'length': value.length,
+      if (value.isNotEmpty) 'item': _shapeOf(value.first),
+    };
+  }
+  if (value is Map) {
+    return {
+      'type': 'map',
+      'fields': {
+        for (final entry in value.entries)
+          '${entry.key}': _shapeOf(entry.value),
+      },
+    };
+  }
+  return {'type': '${value.runtimeType}'};
 }
 
 Future<void> _ready(dynamic state, bool Function() ready) async {

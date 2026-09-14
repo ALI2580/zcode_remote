@@ -13,10 +13,28 @@ class _Bridge implements BridgeSession {
   @override
   final recovered = ValueSignal<int>(0);
   @override
+  final recoveryStarting = ValueSignal<int>(0);
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {
+  test('clientHello declares the official workspaceHookReviewUi capability',
+      () async {
+    final bridge = _Bridge();
+    bridge.channels.handler = (channel, method, args) =>
+        method == 'helloConversationV4' ? {'connectionId': 'c1'} : {};
+    final transport = ConversationTransport(session: bridge, scope: const {});
+    await transport.handshake();
+    final init = bridge.channels.calls
+        .where((call) => call.method == 'initializeConversationV4')
+        .single;
+    final payload = init.args.single as Map;
+    expect(payload['kind'], 'clientHello');
+    expect(payload['clientKind'], 'mobileApp');
+    expect(payload['capabilities'], {'workspaceHookReviewUi': true});
+  });
+
   test('late old hello cannot initialize new channels or replace connection ID',
       () async {
     final bridge = _Bridge();
@@ -28,7 +46,7 @@ void main() {
     bridge.channels = FeatureChannels()
       ..handler = (channel, method, args) =>
           method == 'helloConversationV4' ? {'connectionId': 'new'} : {};
-    bridge.recovered.value++;
+    bridge.recoveryStarting.value++;
     await transport.handshake();
     oldHello.complete({'connectionId': 'old'});
     await oldFailure;
@@ -51,7 +69,7 @@ void main() {
       ..handler = (channel, method, args) => method == 'helloConversationV4'
           ? {'connectionId': 'new'}
           : newInit.future;
-    bridge.recovered.value++;
+    bridge.recoveryStarting.value++;
     final fresh = transport.handshake();
     await Future<void>.delayed(Duration.zero);
     oldHello.completeError(StateError('old connection closed'));

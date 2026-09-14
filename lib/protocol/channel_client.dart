@@ -142,6 +142,7 @@ class ChannelRpcError implements Exception {
 /// Well-known channel names (`Wb` enum in the web client).
 class Channels {
   static const file = 'file';
+  static const windowController = 'window-controller';
   static const system = 'system';
   static const terminal = 'terminal';
   static const git = 'git';

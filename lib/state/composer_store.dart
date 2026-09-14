@@ -41,6 +41,62 @@ class ComposerStore {
   final _draftConfigs = <String, Map<String, dynamic>>{};
   final _recoveries = <String, Map<String, dynamic>>{};
   final _forgottenDevices = <String>{};
+  final _scopeRefreshGenerations = <(String?, String), int>{};
+
+  /// Re-fetches one authoritative prepare result per transport, then applies
+  /// it to every existing controller in the matching device/workspace scope.
+  /// This keeps drafts, selected values, and view state intact while ensuring
+  /// main/side/draft composers see a confirmed provider catalog together.
+  Future<void> refreshScope({
+    required String? deviceId,
+    required String workspaceKey,
+    ConversationTransport? scopeTransport,
+  }) async {
+    final scope = (deviceId, workspaceKey);
+    final generation = (_scopeRefreshGenerations[scope] ?? 0) + 1;
+    _scopeRefreshGenerations[scope] = generation;
+    final grouped = <ConversationTransport, List<ComposerController>>{};
+    // A settings write can happen before a draft controller exists. Seed the
+    // scoped transport so its authoritative prepare cache is refreshed; do
+    // not obtain/create an unrelated @draft controller as a side effect.
+    if (scopeTransport != null) grouped[scopeTransport] = [];
+    for (final controller in _controllers.values) {
+      if (controller.deviceId != deviceId ||
+          controller.workspaceKey != workspaceKey) {
+        continue;
+      }
+      grouped.putIfAbsent(controller.transport, () => []).add(controller);
+    }
+    for (final entry in grouped.entries) {
+      final WorkspacePrep prepared;
+      try {
+        // ConversationTransport owns the scope cache. One refresh per
+        // transport avoids an RPC for every visible pane.
+        prepared = await entry.key.prepareWorkspace(refresh: true);
+      } catch (_) {
+        // A failed read leaves every controller's confirmed catalog and
+        // selection untouched; the settings page reports the write result.
+        continue;
+      }
+      if (_scopeRefreshGenerations[scope] != generation) continue;
+      final live = [
+        for (final controller in entry.value)
+          if (identical(_controllers[controller.key], controller)) controller,
+      ];
+      await Future.wait([
+        for (final controller in live)
+          controller.applyPreparedOptions(prepared),
+      ]);
+      if (_scopeRefreshGenerations[scope] != generation) continue;
+      for (final controller in live) {
+        if (!identical(_controllers[controller.key], controller)) continue;
+        // Provider/skill/plugin/session writes can change reference menus even
+        // when the active model remains valid. Drop only cached suggestions;
+        // ComposerInput and its current references remain untouched.
+        controller.references.invalidate();
+      }
+    }
+  }
   String? _deviceForKey(String key) {
     try {
       final values = jsonDecode(key);

@@ -55,6 +55,17 @@ class ComposerReferences extends ChangeNotifier {
     _editingChanged();
   }
 
+  /// Clears only one category's cache (e.g. plugins after marketplace close),
+  /// leaving other categories (files, sessions) untouched.
+  void invalidateCategory(String category) {
+    _generation++;
+    _cache.remove(category);
+    _loading.remove(category);
+    failed.remove(category);
+    if (category == 'files') _filesLoadedAt = null;
+    _editingChanged();
+  }
+
   void dismiss() {
     _dismissed = '${input.text}\u0000${input.selection.baseOffset}';
     trigger = null;
@@ -193,12 +204,15 @@ class ComposerReferences extends ChangeNotifier {
   bool pick([ComposerReference? entry]) {
     final request = trigger;
     final values = entries;
-    final item = entry ??
-        (values.isEmpty ? null : values[selected.clamp(0, values.length - 1)]);
-    if (request == null ||
-        item == null ||
-        item.disabled ||
-        !values.contains(item)) {
+    final selectedIndex = values.indexWhere((candidate) =>
+        identical(candidate, entry) ||
+        (entry?.category == 'commands' && candidate.id == entry!.id));
+    final item = entry == null
+        ? (values.isEmpty ? null : values[selected.clamp(0, values.length - 1)])
+        : selectedIndex == -1
+            ? null
+            : values[selectedIndex];
+    if (request == null || item == null || item.disabled) {
       return false;
     }
     final current = ComposerTrigger.parse(input.value);

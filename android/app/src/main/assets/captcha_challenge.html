@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://o.alicdn.com https://*.alicdn.com https://*.aliyun.com https://*.aliyuncs.com; script-src 'self' 'unsafe-inline' https://o.alicdn.com https://*.alicdn.com https://*.aliyun.com https://*.aliyuncs.com; style-src 'self' 'unsafe-inline' https://*.alicdn.com https://*.aliyun.com https://*.aliyuncs.com; img-src 'self' data: https:; frame-src https://*.alicdn.com https://*.aliyun.com https://*.aliyuncs.com; connect-src https://*.alicdn.com https://*.aliyun.com https://*.aliyuncs.com;">
+  <style>
+    html, body { margin: 0; min-height: 100%; font-family: sans-serif; background: #fff; color: #202020; }
+    body { padding: 16px; box-sizing: border-box; }
+    #zcode-captcha-container { min-height: 72px; }
+    #zcode-captcha-trigger { min-height: 40px; padding: 8px 18px; border: 1px solid #b8b8b8; border-radius: 8px; background: #fff; color: #202020; }
+  </style>
+</head>
+<body>
+  <div id="zcode-captcha-container"></div>
+  <button id="zcode-captcha-trigger" type="button">Verify</button>
+  <script>
+    (() => {
+      const config = __ZCODE_CAPTCHA_CONFIG__;
+      let completed = false;
+      let fallbackShown = false;
+      let instanceReady = false;
+      let failureCount = 0;
+      const bridge = (type, value) => {
+        if (completed) return;
+        completed = true;
+        const payload = type === 'success'
+          ? { type: 'success', param: value }
+          : { type: 'error', message: String(value || 'CAPTCHA verification failed') };
+        window.ZcodeCaptchaBridge.onResult(JSON.stringify(payload));
+      };
+      document.getElementById('zcode-captcha-trigger').textContent =
+        config.language === 'cn' ? '验证' : 'Verify';
+      const triggerInteractive = () => {
+        if (completed || fallbackShown) return;
+        fallbackShown = true;
+        const button = document.getElementById('zcode-captcha-trigger');
+        if (button) button.click();
+      };
+      const success = (param) => {
+        if (typeof param !== 'string' || param.trim().length === 0) {
+          bridge('error', 'CAPTCHA SDK returned no verification parameter');
+          return;
+        }
+        bridge('success', param.trim());
+      };
+      const fail = (error) => {
+        const code = error && (error.verifyCode || error.VerifyCode);
+        if (code === 'F008' || failureCount > 0) {
+          bridge('error', code === 'F008'
+            ? 'CAPTCHA verification was already submitted'
+            : (error && error.message));
+          return;
+        }
+        failureCount += 1;
+        triggerInteractive();
+      };
+      window.AliyunCaptchaConfig = { region: config.region, prefix: config.prefix };
+      const script = document.createElement('script');
+      script.src = 'https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js';
+      script.async = true;
+      const init = () => {
+        if (completed) return;
+        if (typeof window.initAliyunCaptcha !== 'function') {
+          bridge('error', 'CAPTCHA SDK is unavailable');
+          return;
+        }
+        window.setTimeout(() => {
+          if (!instanceReady && !completed) {
+            bridge('error', 'CAPTCHA SDK instance was not ready');
+          }
+        }, 10000);
+        try {
+          window.initAliyunCaptcha({
+            SceneId: config.sceneId,
+            mode: 'popup',
+            language: config.language,
+            showErrorTip: false,
+            element: '#zcode-captcha-container',
+            button: '#zcode-captcha-trigger',
+            getInstance: (instance) => {
+              if (completed) return;
+              instanceReady = true;
+              if (instance && typeof instance.startTracelessVerification === 'function') {
+                instance.startTracelessVerification();
+              } else {
+                triggerInteractive();
+              }
+            },
+            success,
+            fail,
+            onError: (error) => bridge('error', error && error.message),
+          });
+        } catch (error) {
+          bridge('error', error && error.message);
+        }
+      };
+      script.onload = () => window.setTimeout(init, 2000);
+      script.onerror = () => bridge('error', 'CAPTCHA SDK failed to load');
+      document.head.appendChild(script);
+    })();
+  </script>
+</body>
+</html>

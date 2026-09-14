@@ -117,6 +117,12 @@ class ConversationHistory extends ChangeNotifier {
     }
   }
 
+  Future<void> restoreSearchAnchor() async {
+    if (_disposed) return;
+    _readingDone = false;
+    await restoreReading();
+  }
+
   void showLatest() => _returnToLatest(null);
 
   void _returnToLatest(ReadingNotice? reason) {

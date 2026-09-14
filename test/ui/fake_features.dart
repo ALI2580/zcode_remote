@@ -68,7 +68,7 @@ class FeatureTransport extends FakeConversationTransport {
   List<Map<String, dynamic>> skillItems = const [
     {
       'id': 'user-skill',
-      'name': 'review-code',
+      'name': 'user-code',
       'path': '/user/review.md',
       'scope': 'user',
       'description': 'User version'

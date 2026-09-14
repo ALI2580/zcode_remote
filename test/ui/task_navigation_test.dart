@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:ui' show SemanticsAction;
+import 'dart:ui' show PointerDeviceKind, SemanticsAction;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -20,6 +20,14 @@ void main() {
   Future<void> Function(SidebarTask)? opening;
   String query = '';
   String? active;
+  Future<void> hoverRow(WidgetTester tester, Finder finder) async {
+    final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await gesture.addPointer(location: Offset.zero);
+    addTearDown(gesture.removePointer);
+    await gesture.moveTo(tester.getCenter(finder));
+    await tester.pump();
+  }
+
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
     prefs = ClientPreferences();
@@ -148,12 +156,89 @@ void main() {
   });
 
   testWidgets(
+      'live updates respect search, timeline, archive and the active task',
+      (tester) async {
+    await tester.runAsync(() => prefs.setTaskView('timeline'));
+    query = 'Task';
+    active = 'shared';
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    expect(find.text('Task A'), findsOneWidget);
+    expect(opened, isEmpty);
+
+    final catalog = projects[0].catalog;
+    final pinRevision = catalog.pinRevision;
+    final archiveRevision = catalog.archiveRevision;
+    catalog.replaceRemote(catalog.parseChannel([
+      {
+        'taskId': 'pinned',
+        'title': 'Pinned task',
+        'pinned': true,
+        'updatedAt': 210
+      },
+      {
+        'taskId': 'shared',
+        'title': 'Task A refreshed',
+        'createdAt': 60,
+        'updatedAt': 120
+      },
+      {
+        'taskId': 'live',
+        'title': 'Task live',
+        'createdAt': 70,
+        'updatedAt': 130
+      },
+      {
+        'taskId': 'archived-new',
+        'title': 'Task archived',
+        'archived': true,
+        'updatedAt': 310
+      },
+    ]));
+    expect(catalog.visible.map((e) => '${e.sessionId}:${e.title}').toList(),
+        contains('shared:Task A refreshed'));
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    expect(find.text('Task A refreshed'), findsOneWidget);
+    expect(find.text('Task live'), findsOneWidget);
+    expect(find.text('Task archived'), findsNothing);
+
+    view.archived = true;
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    expect(find.text('Task archived'), findsOneWidget);
+    expect(find.text('Task live'), findsNothing);
+
+    catalog.replacePinned([], requestRevision: pinRevision);
+    catalog.replaceArchived([], requestRevision: archiveRevision);
+    await tester.pumpAndSettle();
+    expect(catalog.isPinned('pinned'), isTrue);
+    expect(catalog.isArchived('archived-new'), isTrue);
+    expect(find.text('Pinned task'), findsOneWidget);
+    expect(find.text('Task archived'), findsOneWidget);
+
+    catalog.channel = [];
+    catalog.index = [];
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    expect(find.text('Task archived'), findsOneWidget);
+    expect(find.text('Pinned task'), findsOneWidget);
+
+    view.archived = false;
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    expect(find.text('Task live'), findsOneWidget);
+    expect(find.text('Task A refreshed'), findsOneWidget);
+    expect(opened, isEmpty);
+  });
+
+  testWidgets(
       'archive requires confirmation and failure keeps the task visible',
       (tester) async {
-    active = 'shared';
     mutation = (task, action) => Future.error(StateError('synthetic rejected'));
     await tester.pumpWidget(app());
     await tester.pumpAndSettle();
+    await hoverRow(tester, find.text('Task A'));
     await tester.tap(find.byTooltip('归档任务'));
     await tester.pumpAndSettle();
     expect(actions, isEmpty);
@@ -203,6 +288,32 @@ void main() {
     await tester.tap(find.text('Task A'));
     await tester.pump();
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    await tester.tap(find.text('Task A'));
+    await tester.pump();
+    expect(opened, hasLength(1));
+    expect(tester.getSize(find.byType(CircularProgressIndicator)),
+        const Size(16, 16));
+    gate.complete();
+    await tester.pumpAndSettle();
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
+  testWidgets(
+      'pending mutation shows the official spinner but does not block open',
+      (tester) async {
+    active = 'shared';
+    final gate = Completer<void>();
+    mutation = (task, action) => gate.future;
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('归档任务'), findsNothing);
+    await hoverRow(tester, find.text('Task A'));
+    await tester.tap(find.byTooltip('归档任务'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认'));
+    await tester.pump();
+    expect(tester.getSize(find.byType(CircularProgressIndicator)),
+        const Size(16, 16));
     await tester.tap(find.text('Task A'));
     await tester.pump();
     expect(opened, hasLength(1));

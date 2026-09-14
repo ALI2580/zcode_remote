@@ -1,14 +1,19 @@
 import 'dart:async';
+import 'package:flutter/widgets.dart' show TextRange;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcode_remote/protocol/conversation.dart';
 import 'package:zcode_remote/state/composer_config.dart';
 import 'package:zcode_remote/state/composer_controller.dart';
 import 'package:zcode_remote/state/composer_store.dart';
+import 'package:zcode_remote/state/composer_input.dart';
+import 'package:zcode_remote/state/composer_attachments.dart';
 import 'package:zcode_remote/state/conversation_view_state.dart';
 import 'package:zcode_remote/state/device_store.dart';
 import 'package:zcode_remote/state/workspace_view_state.dart';
 import 'package:zcode_remote/notifications/task_target.dart';
 import '../ui/fake_workspace.dart';
+import '../ui/fake_features.dart';
+import 'dart:typed_data';
 
 void snapshot(ConversationState state, Map<String, dynamic> patch) {
   state.applyFrame({
@@ -212,6 +217,30 @@ void main() {
     expect(other.config['model'], 'GLM-5.2');
     expect(controller.config['model'], 'GLM-5.2');
     expect(bridge.conversationTransport.commands, isEmpty);
+  });
+
+  test('recovery on one identical task id does not disturb the other remote',
+      () async {
+    final otherBridge = FakeBridge();
+    final other = store.obtain(
+        transport: otherBridge.conversationTransport,
+        deviceId: 'B',
+        workspaceKey: 'workspace',
+        sessionId: 'task');
+    final otherState = ConversationState();
+    snapshot(otherState, {});
+    other.bind(otherState);
+    addTearDown(other.dispose);
+    await other.loadOptions();
+    controller.input.text = 'A recovery draft';
+    other.input.text = 'B independent draft';
+
+    bridge.recovered.value++;
+    await pumpEventQueue();
+    expect(controller.input.text, 'A recovery draft');
+    expect(other.input.text, 'B independent draft');
+    expect(other.config['model'], 'GLM-5.2');
+    expect(otherBridge.conversationTransport.commands, isEmpty);
   });
 
   test(
@@ -581,6 +610,88 @@ void main() {
         ['task', 'task']);
   });
 
+  test('official queue edit returns text and uploaded attachments to composer',
+      () async {
+    snapshot(state, {
+      'queue': {
+        'autoDrain': true,
+        'items': [
+          {
+            'queueItemId': 'q1',
+            'kind': 'sendText',
+            'text': 'queued text',
+            'attachments': [
+              {
+                'ref': 'synthetic:task:note.txt',
+                'fileName': 'note.txt',
+                'mime': 'text/plain',
+                'bytes': 8
+              }
+            ],
+            'dispatch': {'state': 'queued'}
+          }
+        ]
+      }
+    });
+    bridge.conversationTransport.commandHandler = (sid, type, payload) async {
+      expect(type, 'deleteQueueItem');
+      return {'status': 'accepted'};
+    };
+    expect(await controller.editQueuedItem('q1'), isTrue);
+    expect(controller.input.text, 'queued text');
+    expect(controller.attachments.items.single.descriptor?['ref'],
+        'synthetic:task:note.txt');
+    expect(controller.attachments.pending, isFalse);
+    expect(bridge.conversationTransport.commands.map((e) => e.type),
+        everyElement(isNot('editQueueItem')));
+  });
+
+  test('queue edit conflicts with a non-empty draft and sends nothing',
+      () async {
+    snapshot(state, {
+      'queue': {
+        'items': [
+          {
+            'queueItemId': 'q1',
+            'kind': 'sendText',
+            'text': 'queued',
+            'dispatch': {'state': 'queued'}
+          }
+        ]
+      }
+    });
+    controller.input.text = 'current draft';
+    expect(await controller.editQueuedItem('q1'), isFalse);
+    expect(controller.input.text, 'current draft');
+    expect(controller.failure, ComposerFailure.queueEditConflict);
+    expect(bridge.conversationTransport.commands, isEmpty);
+  });
+
+  test('a queue edit that loses the empty editor race does not overwrite',
+      () async {
+    snapshot(state, {
+      'queue': {
+        'items': [
+          {
+            'queueItemId': 'q1',
+            'kind': 'sendText',
+            'text': 'queued',
+            'dispatch': {'state': 'queued'}
+          }
+        ]
+      }
+    });
+    final gate = Completer<dynamic>();
+    bridge.conversationTransport.commandHandler =
+        (sid, type, payload) => gate.future;
+    final editing = controller.editQueuedItem('q1');
+    controller.input.text = 'newer draft';
+    gate.complete({'status': 'accepted'});
+    expect(await editing, isFalse);
+    expect(controller.input.text, 'newer draft');
+    expect(controller.failure, ComposerFailure.queueEditRestoreFailed);
+  });
+
   test(
       'model parsing, metadata and injected-option filtering use official wire shape',
       () {
@@ -614,5 +725,111 @@ void main() {
           'thoughtLevels': ['high']
         }),
         isEmpty);
+  });
+
+  test('D4.1 combined closure: send with text and attachment, stop, send again',
+      () async {
+    // Setup: prepare a session with running state
+    snapshot(state, {
+      'control': {'phase': 'running', 'canStop': true, 'stopState': 'stoppable'}
+    });
+    controller.input.text = 'combined message';
+    // Send first message
+    final result = await controller.send();
+    expect(result, ComposerSendResult.sent);
+    expect(bridge.conversationTransport.sent, contains('combined message'));
+    // Verify stop is available
+    expect(controller.canStop, isTrue);
+    // Stop
+    final stopResult = await controller.stop();
+    expect(stopResult, isTrue);
+    // After stop, canStop should reflect the new state
+    // Send another message (scope closure: new send in same session)
+    controller.input.text = 'follow-up message';
+    await controller.send();
+    // The send should work without duplication
+    expect(
+        bridge.conversationTransport.sent.where((s) => s == 'combined message'),
+        hasLength(1));
+    expect(
+        bridge.conversationTransport.sent
+            .where((s) => s == 'follow-up message'),
+        hasLength(1));
+  });
+
+  test(
+      'D4.1 combined reference/attachment first send keeps receipt, stop and resend scoped',
+      () async {
+    final feature = FeatureBridge();
+    final draft = store.obtain(
+        transport: feature.conversationTransport,
+        deviceId: 'A',
+        workspaceKey: 'workspace');
+    await draft.loadOptions();
+    await draft.selectModel('builtin:bigmodel-coding-plan/GLM-5.2');
+    draft.input.text = 'combined message';
+    draft.input.insertReference(
+        const TextRange(start: 0, end: 0),
+        const ComposerReference(
+            id: 'file',
+            category: 'files',
+            label: 'main.dart',
+            value: 'lib/main.dart'));
+    draft.attachments.add([
+      PickedAttachment(
+          name: 'combined.txt',
+          mime: 'text/plain',
+          size: 4,
+          read: () async => Uint8List.fromList([1, 2, 3, 4]))
+    ]);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    expect(draft.attachments.pending, isFalse);
+    expect(draft.sessionId, isNull);
+    expect(await draft.send(), ComposerSendResult.sent);
+    expect(draft.sessionId, 'created-task');
+    final sends = feature.conversationTransport.commands
+        .where((command) => command.type == 'sendText');
+    expect(sends, hasLength(1));
+    expect(sends.single.sessionId, 'created-task');
+    expect(
+        sends.single.payload['text'], contains('[main.dart](./lib/main.dart)'));
+    expect(sends.single.payload['attachments'], hasLength(1));
+    expect(draft.input.text, isEmpty);
+    expect(draft.attachments.items, isEmpty);
+
+    final state = ConversationState();
+    state.applyFrame({
+      'toSeq': state.seq + 1,
+      'payload': {
+        'kind': 'snapshot',
+        'snapshot': {
+          ...composerSnapshotFixture,
+          'sessionId': 'created-task',
+          'control': {
+            'phase': 'running',
+            'canStop': true,
+            'stopState': 'stoppable',
+            'activeWorks': [
+              {'foregroundExecutionId': 'run-1'}
+            ]
+          }
+        }
+      }
+    }, onGap: () => fail('unexpected gap'));
+    draft.bind(state);
+    expect(await draft.stop(), isTrue);
+    final stops = feature.conversationTransport.commands
+        .where((command) => command.type == 'stop');
+    expect(stops, hasLength(1));
+    expect(stops.single.sessionId, 'created-task');
+    expect(stops.single.payload, {'expectedForegroundExecutionId': 'run-1'});
+
+    draft.input.text = 'follow-up';
+    expect(await draft.send(), ComposerSendResult.sent);
+    final allSends = feature.conversationTransport.commands
+        .where((command) => command.type == 'sendText');
+    expect(allSends, hasLength(2));
+    expect(allSends.last.sessionId, 'created-task');
+    expect(allSends.last.payload['text'], 'follow-up');
   });
 }

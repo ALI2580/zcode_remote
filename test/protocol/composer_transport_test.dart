@@ -47,6 +47,8 @@ class _Bridge implements BridgeSession {
   final degraded = ValueSignal<String?>(null);
   @override
   final recovered = ValueSignal<int>(0);
+  @override
+  final recoveryStarting = ValueSignal<int>(0);
   final commands = <Map<String, dynamic>>[];
   final queries = <({String channel, String method, List args})>[];
   final preparations = <Map<String, dynamic>>[];

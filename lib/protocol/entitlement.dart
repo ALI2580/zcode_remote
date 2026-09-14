@@ -18,6 +18,22 @@ int? _resetMillis(Object? value) {
   return n.toInt();
 }
 
+/// Subscription dates arrive either as epoch millis or as an ISO date
+/// string (the official renderers only `.trim()` the raw value). Out-of
+/// -range and malformed values degrade to null so callers hide the line.
+int? _dateMillis(Object? value) {
+  if (value is num) return _resetMillis(value);
+  if (value is String) {
+    final s = value.trim();
+    if (s.isEmpty) return null;
+    final n = num.tryParse(s);
+    if (n != null) return _resetMillis(n);
+    final t = DateTime.tryParse(s);
+    if (t != null) return _resetMillis(t.millisecondsSinceEpoch);
+  }
+  return null;
+}
+
 /// O2e / Tv / fT: selected OAuth connection, including team scope.
 class EntitlementSource {
   const EntitlementSource(
@@ -293,6 +309,9 @@ class EntitlementSnapshot {
   final String? providerId;
   final String? unavailableReason;
   final String? level;
+  final String? planName;
+  final int? expireTime;
+  final int? renewTime;
   final List<QuotaLimit> limits;
   final QuotaLimit? mcpAggregate;
   final bool hasRemaining;
@@ -308,6 +327,9 @@ class EntitlementSnapshot {
     required this.mcpAggregate,
     required this.hasRemaining,
     required this.hasSubscription,
+    required this.planName,
+    required this.expireTime,
+    required this.renewTime,
     required this.hasQuota,
     this.scope,
     this.organizationId,
@@ -383,6 +405,11 @@ class EntitlementSnapshot {
       providerId: provider is Map ? '${provider['id'] ?? ''}' : null,
       unavailableReason: _string(res['unavailableReason']),
       level: quota is Map ? _string(quota['level']) : null,
+      planName: _string(detail?['productName']) ??
+          _string(detail?['productId']) ??
+          (quota is Map ? _string(quota['level']) : null),
+      expireTime: _dateMillis(detail?['expireTime']),
+      renewTime: _dateMillis(detail?['renewTime']),
       scope: context is Map ? _string(context['scope']) : null,
       organizationId:
           context is Map ? _string(context['organizationId']) : null,
