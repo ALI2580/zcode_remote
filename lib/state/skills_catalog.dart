@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../protocol/channel_client.dart';
+import '../protocol/conversation_bridge.dart';
 import '../protocol/conversation.dart' as protocol;
-import '../protocol/zemote_client.dart';
 
 String _skillText(Object? value) => value is String ? value.trim() : '';
 Map<String, dynamic> _skillMap(Object? value) => value is Map
@@ -38,7 +38,7 @@ abstract interface class SkillsService {
 
 class ChannelSkillsService implements SkillsService {
   ChannelSkillsService(this.session);
-  final BridgeSession session;
+  final ConversationBridge session;
   Map<String, dynamic> _scope(String? path, String? identity) => {
         if (_skillText(path).isNotEmpty) 'workspacePath': _skillText(path),
         if (_skillText(identity).isNotEmpty)

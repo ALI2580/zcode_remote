@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../protocol/channel_client.dart';
-import '../protocol/zemote_client.dart';
+import '../protocol/conversation_bridge.dart';
 
 enum ModelProviderCatalogStatus { idle, loading, loaded, error }
 
@@ -152,7 +152,7 @@ class ModelProvidersCatalog extends ChangeNotifier {
     required this.scopeKey,
   });
 
-  final BridgeSession session;
+  final ConversationBridge session;
   final String scopeKey;
 
   int _generation = 0;

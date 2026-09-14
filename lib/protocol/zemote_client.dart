@@ -520,7 +520,7 @@ class ZemoteClient {
   }
 }
 
-class BridgeSession {
+class BridgeSession implements ConversationBridge {
   Map<String, dynamic> _bridge;
   RpcFrameTransport _transport;
   ChannelClient _channels;
@@ -530,18 +530,22 @@ class BridgeSession {
 
   /// Internal edge used to tell live subscriptions to rebuild. The public
   /// [recovered] counter advances only after those subscriptions confirm.
+  @override
   final recoveryStarting = ValueSignal<int>(0);
 
   /// Non-null while the bridge is degraded (rpc-transport-fault etc.).
+  @override
   final ValueSignal<String?> degraded = ValueSignal(null);
 
   /// Bumped when the bridge recovers/reopens — subscriptions must
   /// resubscribe (server-side subscription state died with the old bridge).
+  @override
   final ValueSignal<int> recovered = ValueSignal(0);
 
   /// Resolves once the bridge is healthy again (degraded cleared), or throws
   /// [TimeoutException]. Commands gate on this so a send during a
   /// reconnect/recovery window doesn't hang on a dead bridge.
+  @override
   Future<void> waitHealthy({Duration timeout = const Duration(seconds: 45)}) {
     if (_disposed) return Future.error(StateError('bridge disposed'));
     if (degraded.value == null) return Future.value();
@@ -580,6 +584,7 @@ class BridgeSession {
 
   Map<String, dynamic> get bridge => _bridge;
   RpcFrameTransport get transport => _transport;
+  @override
   ChannelClient get channels => _channels;
 
   void _swap(

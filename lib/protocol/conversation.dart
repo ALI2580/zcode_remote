@@ -5,9 +5,10 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'channel_client.dart';
+import 'conversation_bridge.dart';
 import 'id.dart';
-import 'zemote_client.dart';
 import 'conversation_state.dart';
+export 'conversation_bridge.dart';
 export 'conversation_state.dart';
 import 'observable.dart';
 
@@ -28,7 +29,7 @@ const conversationProtocolAppVersion = '3.6.5';
 class ConversationTransport {
   static const channel = Channels.zcodeAgent;
 
-  final BridgeSession session;
+  final ConversationBridge session;
   final Map<String, dynamic> scope;
   final String appVersion;
   final void Function(String line)? onLog;

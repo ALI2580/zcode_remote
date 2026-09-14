@@ -14,22 +14,51 @@ import 'package:flutter_test/flutter_test.dart';
 
 final _root = Directory('lib');
 
+/// Normalized (forward-slash) repo-relative path of [file].
+///
+/// `listSync` yields backslash paths on Windows; every graph key and resolved
+/// target must share one separator space or edges silently vanish on Windows
+/// while CI (Linux) sees the full graph.
+String _posixPath(File file) => file.path.replaceAll('\\', '/');
+
 List<File> dartFiles(String prefix) => _root
     .listSync(recursive: true)
     .whereType<File>()
-    .where((f) => f.path.startsWith('$prefix/') && f.path.endsWith('.dart'))
+    .where((f) => _posixPath(f).startsWith('$prefix/') && f.path.endsWith('.dart'))
     .toList();
 
-final _declPattern = RegExp(r'''^\s*(?:import|export|part)\s+['"](.+)['"]''');
+final _uriPattern = RegExp(r'''['"]([^'"]+)['"]''');
 
-/// All URI strings declared by [file] (import/export/part).
+/// All URI strings declared by [file] (import/export/part), including every
+/// conditional-import branch (`import 'a.dart' if (...) 'b.dart'`).
 List<String> declaredUris(File file) {
   final uris = <String>[];
   for (final line in file.readAsLinesSync()) {
-    final match = _declPattern.firstMatch(line);
-    if (match != null) uris.add(match.group(1)!);
+    final trimmed = line.trim();
+    if (!trimmed.startsWith('import ') &&
+        !trimmed.startsWith('export ') &&
+        !trimmed.startsWith('part ')) {
+      continue;
+    }
+    uris.addAll(_uriPattern.allMatches(line).map((m) => m.group(1)!));
   }
   return uris;
+}
+
+/// Collapse `.`/`..` segments in a forward-slash path.
+String _normalizePosix(String path) {
+  final out = <String>[];
+  for (final segment in path.split('/')) {
+    if (segment.isEmpty || segment == '.') continue;
+    if (segment == '..') {
+      if (out.isNotEmpty && out.last != '..') {
+        out.removeLast();
+        continue;
+      }
+    }
+    out.add(segment);
+  }
+  return out.join('/');
 }
 
 /// Resolve a declared URI to a repo file path when it points inside the
@@ -41,20 +70,8 @@ String? resolvePackageUri(File file, String uri) {
   }
   if (uri.startsWith('dart:')) return null;
   // relative path, normalized against the file directory
-  final parts = file.parent.path.split('/');
-  var segments = uri.split('/');
-  var up = 0;
-  while (segments.isNotEmpty && segments.first == '..') {
-    up++;
-    segments = segments.sublist(1);
-  }
-  if (up > 0) {
-    final kept = parts.sublist(0, parts.length - up);
-    return '${kept.join('/')}/${segments.join('/')}';
-  }
-  // same-directory relative import — the dir may be '.' for lib root files
-  final dir = parts.join('/');
-  return '$dir/${segments.join('/')}'.replaceAll('//', '/');
+  final dirSegments = _posixPath(file).split('/')..removeLast();
+  return _normalizePosix('${dirSegments.join('/')}/$uri');
 }
 
 void main() {

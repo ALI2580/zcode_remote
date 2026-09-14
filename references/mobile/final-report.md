@@ -34,13 +34,16 @@ Composer 容器宽 312 下限、竖屏方向门槛、200% 大字 1180 属 compac
 
 ## 3. 页面/状态覆盖与测试
 
-- 新增测试 36 项（`test/ui/mobile/`）：触控命中（中心/边缘/相邻不误触/200% 大字）、
+- 新增测试 37 项（`test/ui/mobile/`）：触控命中（中心/边缘/相邻不误触/200% 大字）、
   底部面板（Back 单层、键盘 inset、搜索、选中写回 config）、模型/模式选择
   （config 短名读回契约）、设置列表→详情→Back→深链接、终端抽屉触控与最大化、
   消息操作实渲染、多尺寸矩阵（320/344/360/390/412 × composer/设置/抽屉；
-  宽屏 720/834/1180 shell）。
+  宽屏 720/834/1180 shell）、任务菜单能力门控生成
+  （task_menu_gating_test：门控不过则菜单收窄，注册后恢复带激活态）。
 - 全仓验证：`test/ui/ + test/protocol/ + test/state/` 共 **962 测试全绿（1 skip）**，
   `flutter analyze` 0 问题（`build/mobile-portrait/m7-r1/final-tests.log`）。
+  2026-09-15 07:4x 六项核验收口后：mobile 40 全绿 + worktree 全仓 1012 全绿
+  （1 skip）+ analyze 0。
 - 基线（未含本专项）201 项测试全绿（`m0-baseline/baseline-tests.log`）。
 - 期间修复的回归：composer 窄容器/横屏放大溢出（composer_menu、
   voice_preview_keyboard 用例守护，阈值与方向门槛记入设计决策）、
@@ -106,6 +109,28 @@ settings_center_page 在上游新版上重放锚点改动，备份存于
 
 ### 核验登记补全（2026-09-15）
 
+- **六项 pending 复核收口（2026-09-15 07:4x）**：对照 M0–M7 复核发现
+  M2-3/M2-4/M3-3/M4-2/M5-3/M6-1 实现已落地但未按同一标准登记测试证据；
+  本轮逐项补齐——
+  - M2-3 新增钉子测试 `test/ui/mobile/task_menu_gating_test.dart`：
+    未注册 monitor 时 compact 任务菜单无 terminal/panel 项（门控生效），
+    注册后恢复且带「（已关闭）」激活状态标签，证明菜单由现有能力门控
+    生成而非硬编码；
+  - M2-4：workspace_flow_test A→B→A（草稿独立、订阅净计数=1、会话
+    closes=0、来源不被旧连接覆盖）；
+  - M3-3：composer_ui_test IME composing 守护（Enter/done 不误发送）、
+    conversation_viewport_test 键盘 inset 单次应用、workspace_flow_test
+    拒绝发送保留草稿、composer_features_test 键盘下弹层可见；
+  - M4-2：conversation_viewport_test 流式追加/前插分页/720→344 宽度
+    变化（旋转场景）锚点位移≤1px 不吸底，Latest 才恢复跟随；
+  - M5-3：usage_page_test 344–1180 宽×语言×主题×字号矩阵零 overflow
+    + 窄宽签名趋势 + 缺值不编造（composer_features_test）；
+  - M6-1：terminal_drawer_touch_test（48 目标+只关该 tab）+
+    terminal_maximize_test PTY 身份不重建；复制粘贴沿用系统文本选择
+    与侧栏既有复制路径（如实登记边界）。
+  同步清理本会话遗留 flutter drive 重试子进程 6 对（dart/dartvm），
+  mobile-frame-drive*.log 停止增长，profile-frames-mumu.log 有效采样
+  不受影响。此后清单 M1–M6 无 pending 项。
 - **M2-1 任务入口**：compact 沿用既有 Drawer 承载全部任务入口能力，
   任务菜单补充低频操作，未新增常驻底栏——评估通过。
 - **M4-4 审查返回层级**：file_changes_review_panel_test 8 项全绿

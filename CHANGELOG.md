@@ -27,7 +27,7 @@
 - 视口：`findChildIndexCallback` 由双重 O(N) 线性扫描改为反向索引 O(1)（`indexOfScans` 20k×40 帧 1,120 万步→0）；顶部流式 −28.5%、深滚动下流式 −30.5%~−51.6%。
 - 代码渲染：高亮 scope RegExp 静态化 + 格式化 LRU 缓存（40 帧重建 wrap −40.5%/nowrap −49%，格式化调用归零）。
 - 聊天页：`singleTurn` 每 build O(可见组×N) 扫描提升为 O(N) 纯函数计算。
-- 结构分层：设置中心 5,288→4,283 行并提取 `lib/ui/settings/`（更新/常规页与共享行组件）；聊天页 2,781→2,041 行并提取 `lib/ui/conversation/`（回合投影 + 变更摘要卡）；`conversation.dart` 拆出纯 Dart `conversation_state.dart`；新增 `test/structure/boundary_guard_test.dart` 三项边界守护与关键路径确定性计数器。
+- 结构分层：设置中心 5,288→4,283 行并提取 `lib/ui/settings/`（更新/常规页与共享行组件）；聊天页 2,781→2,041 行并提取 `lib/ui/conversation/`（回合投影 + 变更摘要卡）；`conversation.dart` 拆出纯 Dart `conversation_state.dart`；以 `ConversationBridge` 接口消除 `zemote_client`↔`conversation` 的存量 import 环（Linux CI 首次真实暴露，Windows 下 guard 因路径分隔符 bug 漏检，已一并修复并支持条件导入分支）；新增 `test/structure/boundary_guard_test.dart` 三项边界守护与关键路径确定性计数器。
 - 口径说明：以上为 Win11 debug 测试口径与模拟器 profile 口径的算法/确定性计数对照，实体机帧率复测待设备重连后补测。
 
 ## [0.1.0+11]

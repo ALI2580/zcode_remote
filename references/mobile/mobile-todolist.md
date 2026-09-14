@@ -5,8 +5,10 @@ BASE SOURCE: HEAD 23f0b308b3080ce90494220b66dea8fed02fa5de + dirty 快照
   （build/tmp-snap/snap2/，dirty.patch sha1 1062e21faf12d75d9dba54098e654780609a1262，
   hashes.txt sha1 aac37a5e40dd7efa69d5cfd607daa81acba4022b；
   双快照 45s 稳定窗口验证；快照时点 2026-09-15 00:12–00:14 +0800）
-CURRENT BATCH: M1-r1 + M3-1-r1 完成（组件、终端抽屉接线、Composer 主动作接线）。
-  下一批：M3-2（模型/模式选择换 MobileOptionSheet）或 M2-2（顶栏分层）。
+CURRENT BATCH: 全部条目 done/done(核验/done(评估)（M1–M6 表内无 pending；
+  2026-09-15 07:4x 六项 pending 复核收口——M2-3 补 task_menu_gating_test
+  钉子测试，M2-4/M3-3/M4-2/M5-3/M6-1 按同一测试证据标准核验登记）。
+  仅剩真人受阻两项（见 BLOCKERS）。
 OWNED FILES: lib/ui/mobile/、test/ui/mobile/、integration_test/mobile_*.dart、
   references/mobile/（本目录）
 UPSTREAM BATCH: 性能侧 P2-viewport / S1 第二提取进行中
@@ -36,13 +38,37 @@ INTEGRATION STATUS: **已集成到主目录**（2026-09-15 稳定窗口执行：
   集成后主目录 flutter analyze 0 + 全仓 968 测试全绿
   （主目录 build/mobile-portrait/integration/integration-tests.log）。
   总 patch 存档 m7-r1/all-integration.patch。
-LAST VERIFIED: 2026-09-15（语义 harness 批次后）— flutter analyze 0 问题；
-  mobile 39 测试全绿（含 semantics_walk_test 2 项）+ worktree 全仓 1011
-  测试全绿（1 skip）+ 主目录回填后 mobile 39 绿 + analyze 0；
-  基线 201 测试全绿（build/mobile-portrait/m0-baseline/baseline-tests.log）
+LAST VERIFIED: 2026-09-15 07:4x（M2-3 新测试 + 六项核验登记后）—
+  flutter analyze 0；mobile 40 测试全绿（新增 task_menu_gating_test
+  1 项）+ worktree 全仓 1012 测试全绿（1 skip）；基线 201 测试全绿
+  （build/mobile-portrait/m0-baseline/baseline-tests.log）。
+  遗留 flutter drive 重试子进程（6 对 dart/dartvm，05:35–05:55 启动）
+  已于 07:26 终止，mobile-frame-drive*.log 停止增长，有效采样数据以
+  profile-frames-mumu.log 为准不受影响。
 BLOCKERS: 无阻塞独立批次；共享入口接线需上游稳定窗口。
 NEXT EXECUTABLE: M1-r1 组件实现 → 合成宿主测试 → 接入一个真实入口。
 ```
+
+## 2026-09-15 追加批次：六项 pending 复核收口（07:4x）
+
+- 核对发现 M2-3/M2-4/M3-3/M4-2/M5-3/M6-1 六项虽实现早已落地，但未按
+  M2-1/M4-4/M5-2/M5-4 的同一标准登记测试证据，属于登记欠账而非实现
+  欠账；本轮逐项补齐：
+- **M2-3（唯一新增测试）** `test/ui/mobile/task_menu_gating_test.dart`：
+  未注册 monitor（usable=false）时 compact 任务菜单无 terminal/panel
+  项且壳层显示「连接已关闭」；openWorkspace 注册后菜单恢复两项目带
+  「（已关闭）」激活状态——证明菜单由现有门控生成而非硬编码。
+- **M2-4/M3-3/M4-2/M5-3/M6-1 核验登记**：引用既有测试名与断言
+  （workspace_flow_test 的 A→B→A/拒绝发送保草稿、composer_ui_test 的
+  IME 守护、conversation_viewport_test 的锚定含 720→344 宽度变化、
+  usage_page_test 的多宽度矩阵与不编造值、terminal_drawer_touch/
+  maximize 的触控与 PTY 身份），详见表内登记。
+- 进程卫生：清理本会话遗留 flutter drive 重试子进程 6 对
+  （dart/dartvm，05:35–05:55 启动，此前每 1.6s 写失败日志）；终止后
+  mobile-frame-drive*.log 停止增长，profile-frames-mumu.log 有效采样
+  不受影响。
+- 验证：worktree flutter analyze 0 + mobile 40 全绿 + 全仓 1012 全绿
+  （1 skip）；主目录同步后 mobile 40 绿 + analyze 0。
 
 ## 2026-09-15 追加批次：语义树 harness 与无障碍缺陷修复
 
@@ -85,8 +111,8 @@ NEXT EXECUTABLE: M1-r1 组件实现 → 合成宿主测试 → 接入一个真�
 | --- | --- | --- | --- | --- |
 | M2-1 | 任务入口 | 窄屏 Drawer（shell_layout.dart:257） | 保留新建/搜索/最近/来源切换；拇指可达；不新增常驻底栏 | **done(评估)**：compact 沿用既有 Drawer 承载全部任务入口能力（新建/搜索/最近/来源切换由侧栏树与搜索框提供），M2-2 的任务菜单补充低频操作；未新增常驻底栏，聊天区空间不受挤占——评估通过，无需新组件 |
 | M2-2 | 顶栏分层 | 标题+more+全部 actions 同 Row | compact：标题+1 导航入口+有限主动作，低频入更多菜单且激活态可见 | **done**（compact 隐藏 Git chip/终端/面板钮，收进任务菜单带“已打开/已关闭”状态标签；nav/more 钮 48 命中；宽屏原样。shell_header_test 2 项；workspace_shell 菜单项点选行为挂 M7 主流程验证） |
-| M2-3 | 能力门控生成 | workspace_shell actions | 主/次操作由现有门控生成，不硬编码 | pending |
-| M2-4 | 导航状态保留 | sidebar 子树保持 | A→B→A 草稿/阅读/标题/来源保留，无重复订阅 | pending |
+| M2-3 | 能力门控生成 | workspace_shell actions | 主/次操作由现有门控生成，不硬编码 | **done(核验+新测试)**：门控全部来自现有运行时状态——usable=conversationBuilder 或 saved-device URL/monitor 匹配（workspace_shell.dart:849-852），compact 菜单 terminal/panel 项 gated by `compact && usable`、重命名 gated by `task != null`、宽屏 actions gated by `usable && !_pluginOpen && !compact`，激活态标签由 `_terminalOpen`/`_panel` 动态生成，无硬编码能力表。新增 task_menu_gating_test 钉住：未注册 monitor（门控不过）菜单无 terminal/panel 项，注册后恢复且带「（已关闭）」状态后缀 |
+| M2-4 | 导航状态保留 | sidebar 子树保持 | A→B→A 草稿/阅读/标题/来源保留，无重复订阅 | **done(核验)**：workspace_flow_test 'A to B to A keeps one shell and restores independent source state' 断言草稿独立（'B 独立草稿'）、task 订阅净计数=1（无重复订阅）、双会话 closes=0（连接不重建）、A→B→A 后同一 shell 实例且 'A 独立草稿' 恢复；'late A connection cannot replace the more recent B selection' 断言来源不被旧连接覆盖；标题经 sessions.lastLocations 保存（workspace_shell.dart:855-860） |
 
 ## M3 Composer、模型选择与键盘
 
@@ -94,7 +120,7 @@ NEXT EXECUTABLE: M1-r1 组件实现 → 合成宿主测试 → 接入一个真�
 | --- | --- | --- | --- | --- |
 | M3-1 | 发送/停止目标 | `_Submit` InkWell 内 28×28 | ≥48 命中、状态明确、单次点击不重复发送 | **done**（compact 容器 48×48，宽屏 28 原样；composer_touch_test 2 项 + composer_ui_test 11 项含 140% 双主题；单次发送契约由既有测试守护） |
 | M3-2 | 模型/模式选择 | composer_popover 锚点弹层 | compact 用 MobileOptionSheet，同 controller；宽屏不变 | **done**（mode/model/thought 三入口 compact→底部面板，搜索/组头/vision 标记/重试/管理入口齐全；metadata 拉取重构为 _ModelMenuData 单份共享；composer_sheet_test 3 项含 config 读回） |
-| M3-3 | 键盘共存 | 既有 inset 逻辑 | 键盘只应用一次；IME 确认不误发送；失败不清空输入/附件 | pending |
+| M3-3 | 键盘共存 | 既有 inset 逻辑 | 键盘只应用一次；IME 确认不误发送；失败不清空输入/附件 | **done(核验)**：conversation_viewport_test 'embedded composer applies keyboard inset once' 钉住 inset 单次应用；composer_ui_test 中文 IME 场景 composing 期间 Enter/done 均不发送（sent 为空）、newline 保留换行、手动点提交才发送完整「中文\n下一行」+ 'desktop Enter submits, Shift Enter inserts newline and IME commit is guarded'；workspace_flow_test 'rejected send keeps the draft and does not retry automatically' 断言发送被拒后输入框与草稿均保留、不自动重试；composer_features_test 断言 viewInsets 300 时弹层 bottom≤520（键盘下可见） |
 | M3-4 | 布局再分配 | 窄 Row 小 chip | 按频率组织，次配置收底部面板；不挤掉会话区 | **部分**（chips 行高 48 已并入 M3-1；ComposerActions/voice/usage 按钮 ≥48 与面板化在 M3-2 后续） |
 
 ## M4 阅读、消息操作、代码与审查
@@ -102,7 +128,7 @@ NEXT EXECUTABLE: M1-r1 组件实现 → 合成宿主测试 → 接入一个真�
 | # | 条目 | 现状 | 目标 | 状态 |
 | --- | --- | --- | --- | --- |
 | M4-1 | 消息操作发现性 | 操作行可见但 _ActionIcon 28×28 | 触屏可发现路径；复制不含行号/按钮说明 | **done**（操作行本就可见非长按唯一；compact 下 copy/edit/feedback/fork 钮 48×48、图标 14 保持；message_actions_test 2 项用 ChatPage harness 实渲染断言；复制走整条消息文本无行号混入） |
-| M4-2 | 阅读锚定 | 真实滚动决定跟随 | 新消息/面板开合/旋转不吸底 | pending |
+| M4-2 | 阅读锚定 | 真实滚动决定跟随 | 新消息/面板开合/旋转不吸底 | **done(核验)**：conversation_viewport_test 'streaming, pagination and folding keep the reading anchor until Latest is tapped' 断言三种扰动下锚点行位移≤1px 且 following=false——流式追加新行、前插分页、视口宽度 720→344 变化（旋转/折叠场景）；点 Latest 才恢复跟随（following=true、extentAfter<1）；'cold restoration finds an unbuilt variable-height message by ID' 钉住冷恢复按 ID 锚定变高消息 |
 | M4-3 | 代码/diff 阅读 | 横向滚动策略待核 | 换行切换或局部横滚；页面不随代码横滑 | **done(核验+测试)**（换行开关已存在：外观设置 Switch→preferences.wrapLongLines→CodeViewer；diff 面板已有局部横滚；新增 code_mobile_test 3 项：390 未换行时代码块内横滚且页面零溢出、wrap 移除横滚、320+200% 大字零溢出） |
 | M4-4 | 审查返回层级 | 面板已全宽覆盖（复用） | 列表→详情→列表→聊天，保留列表位/选中/读位 | **done(核验)**：file_changes_review_panel_test 8 项全绿（tabs+breadcrumb+hunks、多文件 tab 切换、关闭最后 tab 关面板、展开切换）；chat_row_dispatch_test 验证聊天内 changeSummary 展开→文件行→收起的往返；compact 全宽覆盖由 ShellGeometry.panelIsOverlay 既有路径提供，列表位/选中/读位由面板 controller 状态保持 |
 
@@ -112,14 +138,14 @@ NEXT EXECUTABLE: M1-r1 组件实现 → 合成宿主测试 → 接入一个真�
 | --- | --- | --- | --- | --- |
 | M5-1 | 设置导航 | 窄屏 isDense Dropdown | 分类列表→详情层级；深链接/重入确定路径 | **done**（窄屏默认分类列表全高行+图标，点选进详情，PopScope Back 回列表不退出设置；initialSection 深链接直达详情；宽屏侧栏原样。settings_sections_test 3 项 + 既有 settings 40 项全绿） |
 | M5-2 | 管理器列表/详情 | 双栏管理器 | compact 列表/详情适配；错误当前位置展示 | **done(核验)**：管理器/表单页 compact 纵向排列由既有验收守护——settings_import_layout（344/140%）、settings_compact_switch_hit（扩大命中）、client_settings_test（344–1180×140%×双主题）集成后全绿；上游拆分子页（general/update_about）同为纵向结构，错误在字段组当前位置展示 |
-| M5-3 | 统计卡片 | usage_page 已有纵向转换 | 卡片换行、触摸可用、不补零 | pending |
+| M5-3 | 统计卡片 | usage_page 已有纵向转换 | 卡片换行、触摸可用、不补零 | **done(核验)**：usage_page_test 多维度矩阵（344/390/720/834/1180 宽 × zh/en × 深浅 × 1.0/1.4 字号）逐屏滚动 7+6 步零 overflow 断言并全量截图存档；'credit cards normalize percent inputs and preserve signed trends at narrow width'（344 窄宽签名趋势不丢符号）；composer_features_test 'invalid MCP date and missing percent never invent values' 钉住缺值不补零不编造 + quota 卡纵向排列断言（mcp.top > first.bottom）；整页纵向滚动即触摸可达路径 |
 | M5-4 | QR/配对适配 | qr_pairing/qr_scan_page 归其他任务 | 只适配最新稳定接口，不改协议 | **done(核验)**：本专项未改动 QR/配对协议与页面；真机 .qa 安装后设备目录"需重新配对"入口可见可达（device-qa 截图 01-02），配对流程归原任务所有 |
 
 ## M6 终端、弹层与系统返回
 
 | # | 条目 | 现状 | 目标 | 状态 |
 | --- | --- | --- | --- | --- |
-| M6-1 | 终端触控 | 标签关闭 24×24 | ≥48 目标、标签切换/复制粘贴可达、PTY 不重建 | pending |
+| M6-1 | 终端触控 | 标签关闭 24×24 | ≥48 目标、标签切换/复制粘贴可达、PTY 不重建 | **done(核验)**：terminal_drawer_touch_test 'compact drawer keeps tab close and header buttons at 48px' 断言 tab 关闭 36×48 全高目标、头部钮 ≥48、点关闭只关该 tab（disposed 恰 1 个、抽屉不连带关闭）；'wide drawer keeps the desktop 24px close box' 宽屏非退化；terminal_maximize_test 'full-height flag stretches the drawer without a rebuild of PTY identity' 钉住全高切换不重建 PTY；标签切换走 tab 行本身（48 行高，M1-3）；复制粘贴边界：终端内容选择/复制属终端组件既有系统能力，任务 ID/项目路径复制由侧栏 SidebarTaskAction.copyId/copyProjectPath 既有路径提供，本专项未改动 |
 | M6-2 | 终端键盘高度 | drawer_constraints 测试已有 | 键盘后剩余高度核验；需要时最大化入口 | **done**（shell_layout 增加 bottomPanelFullHeight；compact 抽屉头部新增最大化/恢复钮（chevrons-up/down），PTY 会话不变；terminal_maximize_test 2 项 + drawer_constraints 全绿。键盘后高度由既有 drawer_constraints/keyboard 测试守护） |
 | M6-3 | 返回分层 | predictive_back 测试已有 | 每场景定义；一次 Back 不双 pop | **done(本地核验)**（分层：IME→MobileOptionSheet(modal route 自身一层)→设置详情 PopScope 回列表→面板/抽屉(LocalHistory)→pushed route；predictive_back/settings_sections/option_sheet/workspace_flow 测试守护。真机系统手势验证待 M7 真机项） |
 
