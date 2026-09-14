@@ -3,7 +3,7 @@ description: "ZcodeRemote - ZCode desktop remote control client (clean-room prot
 publish_to: 'none'
 
 # Keep in sync with lib/update/app_version.dart (appVersion/appBuildNumber).
-version: 0.1.0+11
+version: 0.1.0+12
 
 environment:
   sdk: ^3.5.0
@@ -28,6 +28,7 @@ dependencies:
   xterm: 4.0.0
   record: ^7.1.1
   sherpa_onnx: ^1.13.7
+  mobile_scanner: ^7.4.2
 
 dev_dependencies:
   flutter_test:

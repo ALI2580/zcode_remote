@@ -1,6 +1,7 @@
 import 'dart:ui' show DisplayFeatureType;
 import 'package:flutter/material.dart';
 import '../../state/client_preferences.dart';
+import '../mobile/touch_target.dart';
 import '../official_icons.dart';
 import '../theme.dart';
 
@@ -89,8 +90,10 @@ class WorkspaceShellLayout extends StatefulWidget {
       required this.onSidebarCollapsed,
       this.panel,
       this.onClosePanel,
+      this.panelExpanded = false,
       this.bottomPanel,
       this.bottomPanelOpen = false,
+      this.bottomPanelFullHeight = false,
       this.onCloseBottomPanel,
       this.actions = const [],
       this.onMore,
@@ -103,9 +106,14 @@ class WorkspaceShellLayout extends StatefulWidget {
   final ValueChanged<bool> onSidebarCollapsed;
   final Widget? panel;
   final bool panelOpen;
+  final bool panelExpanded;
   final VoidCallback? onClosePanel;
   final Widget? bottomPanel;
   final bool bottomPanelOpen;
+
+  /// Compact shells let the terminal drawer take the full body height. The
+  /// default keeps the official 320px drawer; the PTY itself is untouched.
+  final bool bottomPanelFullHeight;
   final VoidCallback? onCloseBottomPanel;
   final List<Widget> actions;
   final VoidCallback? onMore;
@@ -204,10 +212,23 @@ class _WorkspaceShellLayoutState extends State<WorkspaceShellLayout> {
         });
   }
 
+  Widget _navButton(BuildContext context, InkTokens ink, bool compact,
+      VoidCallback onPressed) {
+    final label = uiText(context, '项目与任务', 'Projects and tasks');
+    return compact
+        ? MobileIconButton(
+            icon: 'panel-left', label: label, onPressed: onPressed)
+        : ShellIconButton(
+            icon: 'panel-left', label: label, onPressed: onPressed);
+  }
+
   @override
   Widget build(BuildContext context) {
     final ink = ZInk.of(Theme.of(context).colorScheme);
     final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+    final compact = MediaQuery.sizeOf(context).width -
+            MediaQuery.paddingOf(context).horizontal <
+        600 * scale.clamp(1.0, 2.0);
     return LayoutBuilder(builder: (context, constraints) {
       final media = MediaQuery.of(context);
       final features = media.displayFeatures;
@@ -220,6 +241,9 @@ class _WorkspaceShellLayoutState extends State<WorkspaceShellLayout> {
           .firstOrNull
           ?.bounds;
       final panelOpen = widget.panel != null && widget.panelOpen;
+      // An expanded review panel spans the whole header area below, hiding
+      // the conversation column for as long as it is open.
+      final panelSpansBody = panelOpen && widget.panelExpanded;
       final geometry = ShellGeometry.resolve(
           constraints.maxWidth - media.padding.horizontal, scale,
           sidebarCollapsed: widget.sidebarCollapsed,
@@ -235,8 +259,12 @@ class _WorkspaceShellLayoutState extends State<WorkspaceShellLayout> {
           (constraints.maxHeight - media.padding.vertical - keyboardInset)
               .clamp(0.0, double.infinity)
               .toDouble();
-      final bottomPanelHeight = (availableBodyHeight - _headerMinHeight)
-          .clamp(0.0, _defaultBottomPanelHeight)
+      // Full-height mode also compensates the header's 1px border so the
+      // drawer never overflows its Column slot.
+      final bottomPanelHeight = widget.bottomPanelFullHeight
+          ? availableBodyHeight - _headerMinHeight - 1
+          : (availableBodyHeight - _headerMinHeight)
+              .clamp(0.0, _defaultBottomPanelHeight)
           .toDouble();
       if (geometry.showSidebar) _sidebarContentMounted = true;
       _sidebarTargetVisible = geometry.showSidebar;
@@ -280,11 +308,8 @@ class _WorkspaceShellLayoutState extends State<WorkspaceShellLayout> {
                               padding:
                                   const EdgeInsets.symmetric(horizontal: 4),
                               child: Row(children: [
-                                ShellIconButton(
-                                    icon: 'panel-left',
-                                    label: uiText(
-                                        context, '项目与任务', 'Projects and tasks'),
-                                    onPressed: () {
+                                _navButton(
+                                    context, ink, compact, () {
                                       if (geometry.showSidebar) {
                                         widget.onSidebarCollapsed(true);
                                       } else if (constraints.maxWidth >= 640 &&
@@ -346,11 +371,15 @@ class _WorkspaceShellLayoutState extends State<WorkspaceShellLayout> {
                                                           fontSize: 12)))
                                             ])),
                                   if (widget.onMore != null)
-                                    ShellIconButton(
-                                        icon: 'ellipsis',
-                                        label:
-                                            uiText(context, '更多', 'More'),
-                                        onPressed: widget.onMore),
+                                    compact
+                                        ? MobileIconButton(
+                                            icon: 'ellipsis',
+                                            label: uiText(context, '更多', 'More'),
+                                            onPressed: widget.onMore)
+                                        : ShellIconButton(
+                                            icon: 'ellipsis',
+                                            label: uiText(context, '更多', 'More'),
+                                            onPressed: widget.onMore),
                                   ...widget.actions,
                                 ])),
                               ])),
@@ -362,15 +391,16 @@ class _WorkspaceShellLayoutState extends State<WorkspaceShellLayout> {
                                           Expanded(
                                               child: ExcludeFocus(
                                                   excluding: panelOpen &&
-                                                      geometry.panelIsOverlay,
+                                                      (geometry.panelIsOverlay ||
+                                                          panelSpansBody),
                                                   child: ExcludeSemantics(
                                                       excluding: panelOpen &&
                                                           geometry
                                                               .panelIsOverlay,
                                                       child: IgnorePointer(
                                                           ignoring: panelOpen &&
-                                                              geometry
-                                                                  .panelIsOverlay,
+                                                              (geometry.panelIsOverlay ||
+                                                                  panelSpansBody),
                                                           child: widget
                                                               .conversation)))),
                                           SizedBox(
@@ -383,9 +413,11 @@ class _WorkspaceShellLayoutState extends State<WorkspaceShellLayout> {
                                             top: 0,
                                             bottom: 0,
                                             right: 0,
-                                            width: geometry.panelIsOverlay
+                                            width: panelSpansBody
                                                 ? workConstraints.maxWidth
-                                                : geometry.panelWidth,
+                                                : geometry.panelIsOverlay
+                                                    ? workConstraints.maxWidth
+                                                    : geometry.panelWidth,
                                             child: ExcludeFocus(
                                                 excluding: !panelOpen,
                                                 child: Offstage(

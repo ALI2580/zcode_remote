@@ -22,12 +22,23 @@ import 'workspace_hook_review_card.dart';
 import '../state/file_changes_review.dart';
 import 'composer/attachment_strip.dart';
 import 'composer/composer_bar.dart';
-import '../protocol/file_changes.dart';
 import 'conversation_viewport.dart';
 import 'conversation_work_rows.dart';
 import 'code_renderer.dart';
 import 'file_changes_review_panel.dart';
+export 'conversation/turn_projection.dart'
+    // S2: canonical home of the turn projection; this export keeps the
+    // existing external imports of chat_page stable.
+    show TurnFileChangeStats, chatTurnGroupComputeMicros,
+    chatTurnGroupComputations, chatTurnGroupProfiling,
+    conversationFileChangeSummaryRows, conversationTurnGroups,
+    formatTurnDuration, rowIsActive, turnDefaultOpen, turnDurationMs,
+    turnFileChangeStats, turnWorkLabel, turnWorkLabelEnglish;
+import 'conversation/change_summary.dart';
+export 'conversation/change_summary.dart' show ConversationChangeSummary;
+import 'conversation/turn_projection.dart';
 import 'official_icons.dart';
+import 'mobile/mobile_layout.dart';
 import 'theme.dart';
 
 /// Time-of-day greeting for the draft (empty) chat — official chat.empty
@@ -49,134 +60,13 @@ String normalizeConversationSearchSource(String value) => value
     .trim()
     .toLowerCase();
 
-/// Official turnHeader duration (bundle BX): activeMs first, then
-/// endedAt-startedAt, running uses now-startedAt.
-int? turnDurationMs(Map<String, dynamic> row, {required bool running}) {
-  final active = (row['activeMs'] as num?)?.toInt();
-  if (active != null) return active;
-  final startedAt = (row['startedAt'] as num?)?.toInt();
-  final endedAt = (row['endedAt'] as num?)?.toInt();
-  if (startedAt != null && endedAt != null) {
-    return (endedAt - startedAt).clamp(0, 1 << 40);
-  }
-  if (running && startedAt != null) {
-    return (DateTime.now().millisecondsSinceEpoch - startedAt)
-        .clamp(0, 1 << 40);
-  }
-  return null;
-}
-
-/// Official turn work-status label (chat.history.*): running = 工作中
-/// {duration}, interrupted/failed = 已停止, completed = 已工作 {duration}
-/// (or 已处理 when no duration was reported).
-String turnWorkLabel({required String state, int? durationMs}) {
-  switch (state) {
-    case 'running':
-    case 'inputStreaming':
-      return durationMs == null || durationMs <= 0
-          ? '工作中'
-          : '工作中 ${formatTurnDuration(durationMs)}';
-    case 'completedInterrupted':
-    case 'cancelled':
-    case 'interrupted':
-    case 'failed':
-    case 'error':
-      return '已停止';
-    default:
-      return durationMs == null || durationMs <= 0
-          ? '已处理'
-          : '已工作 ${formatTurnDuration(durationMs)}';
-  }
-}
-
-/// zh compact duration (chat.history.duration.*): 秒/分/时/天, zero-value
-/// trailing units dropped, everything-zero collapses to 0秒.
-String formatTurnDuration(int ms) {
-  if (ms < 0) ms = 0;
-  final duration = Duration(milliseconds: ms);
-  final days = duration.inDays;
-  final hours = duration.inHours % 24;
-  final minutes = duration.inMinutes % 60;
-  final seconds = duration.inSeconds % 60;
-  final parts = <String>[
-    if (days > 0) '$days天',
-    if (hours > 0) '$hours时',
-    if (minutes > 0) '$minutes分',
-    if (seconds > 0) '$seconds秒',
-  ];
-  return parts.isEmpty ? '0秒' : parts.join();
-}
-
-/// Official default-open rule for a turn's collapsible history: the latest
-/// turn stays open while running; a lone turn with no assistant text yet
-/// stays open; everything else defaults to collapsed (conversation-page-spec
-/// §1). Collapsing keeps only the final assistant summary text.
-bool turnDefaultOpen({
-  required bool isLastTurn,
-  required bool running,
-  required bool singleTurn,
-  required bool hasAssistantText,
-  required bool hasWorkRows,
-}) {
-  if (isLastTurn && running) return true;
-  if (singleTurn && !hasAssistantText && hasWorkRows) return true;
-  return false;
-}
-
-/// Groups rows into turns (mirrors the web timeline): a user message starts
-/// a new group; assistant text/reasoning/tool rows that follow belong to
-/// the same turn and render as ONE message. Consecutive assistant rows merge
-/// even if the server bumps `turnId` mid-response (lesson #6).
-List<List<Map<String, dynamic>>> conversationTurnGroups(
-    List<Map<String, dynamic>> rows) {
-  final groups = <List<Map<String, dynamic>>>[];
-  List<Map<String, dynamic>>? current;
-  for (final row in rows) {
-    final kind = row['kind'];
-    if (kind == 'timelineMarker') {
-      current = null;
-      groups.add([row]);
-      continue;
-    }
-    final isUser = kind == 'userInput';
-    final startsGroup =
-        isUser || current == null || current.first['kind'] == 'userInput';
-    if (startsGroup) {
-      current = [row];
-      groups.add(current);
-    } else {
-      current.add(row);
-    }
-  }
-  return groups;
-}
-
-/// Selects one authoritative file-change summary per rendered turn. A
-/// `turnHeader.fileChanges` map suppresses legacy `changeSummary` rows even
-/// when the reported file count is zero or the wire rows omit `turnId`; only
-/// a valid positive file count is returned for display.
-List<Map<String, dynamic>> conversationFileChangeSummaryRows(
-    List<Map<String, dynamic>> rows) {
-  final summaries = <Map<String, dynamic>>[];
-  for (final group in conversationTurnGroups(rows)) {
-    Map<String, dynamic>? header;
-    for (final row in group) {
-      if (row['kind'] == 'turnHeader' && row['fileChanges'] is Map) {
-        header = row;
-      }
-    }
-    final stats = header == null ? null : turnFileChangeStats(header);
-    if (stats != null && stats.files > 0 && header != null) {
-      summaries.add(header);
-    } else if (header == null) {
-      summaries.addAll(group.where((row) => row['kind'] == 'changeSummary'));
-    }
-  }
-  return summaries;
-}
-
 /// Chat view for one task (session), backed by Conversation V4 subscription.
 /// Draft mode (no [sessionId]): the first message issues `createSession`.
+/// P2-conv deterministic counters: one increment per ChatPage build. The
+/// streaming chain is state notification → setState → build → full turn
+/// grouping; these counters make each stage observable in tests and CI.
+int chatPageBuildCount = 0;
+
 class ChatPage extends StatefulWidget {
   final BridgeSession session;
   final Map<String, dynamic> scope;
@@ -269,6 +159,9 @@ class _ChatPageState extends State<ChatPage> {
   int _searchHighlightAttempts = 0;
   int _forkGeneration = 0;
   int? _forkingRowId;
+  int _editGeneration = 0;
+  int? _editingRowId;
+  String? _editFailure;
   final _feedbackByRowId = <int, String?>{};
   int _feedbackGeneration = 0;
   String? _activeSessionOverride;
@@ -745,10 +638,69 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  void _editMessage(String text) {
-    _composer.input.text = text;
-    _composer.input.selection =
-        TextSelection(baseOffset: text.length, extentOffset: text.length);
+  void _editMessage(Map<String, dynamic> row) {
+    final rowId = (row['rowId'] as num?)?.toInt();
+    if (rowId == null) return;
+    setState(() {
+      _editingRowId = _editingRowId == rowId ? null : rowId;
+      _editFailure = null;
+    });
+  }
+
+  /// Official `editUserQuery` flow: the edited text replaces the turn's user
+  /// query in place and the assistant regenerates its most recent response,
+  /// so the old answer is superseded server-side (no client-side truncation).
+  Future<void> _submitMessageEdit(Map<String, dynamic> row, String newText) =>
+      _submitEdit(
+          rowId: (row['rowId'] as num?)?.toInt(),
+          entityId: row['entityId'],
+          newText: newText);
+
+  Future<void> _submitEdit({
+    required int? rowId,
+    required dynamic entityId,
+    required String newText,
+  }) async {
+    final trimmed = newText.trim();
+    final targetRowId = rowId;
+    final targetEntityId = entityId;
+    final sessionId = _sessionId;
+    if (trimmed.isEmpty ||
+        targetRowId == null ||
+        targetEntityId == null ||
+        sessionId.isEmpty) {
+      return;
+    }
+    final generation = ++_editGeneration;
+    final target = {'rowId': targetRowId, 'entityId': targetEntityId};
+    setState(() {
+      _editingRowId = targetRowId;
+      _editFailure = null;
+    });
+    try {
+      final response =
+          await _transport.editUserQuery(sessionId, target, trimmed);
+      if (!mounted || generation != _editGeneration) return;
+      final map = response is Map ? response : null;
+      final status = map?['status'];
+      if (status != 'accepted' && status != 'duplicate') {
+        setState(() {
+          _editFailure =
+              uiText(context, '编辑重发失败，请重试', 'Edit failed. Try again.');
+        });
+        return;
+      }
+      setState(() {
+        _editingRowId = null;
+        _editFailure = null;
+      });
+    } catch (_) {
+      if (!mounted || generation != _editGeneration) return;
+      setState(() {
+        _editFailure =
+            uiText(context, '编辑重发失败，请重试', 'Edit failed. Try again.');
+      });
+    }
   }
 
   /// Official kX feedback flow: optimistic reaction, `setAssistantFeedback`
@@ -879,6 +831,7 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   Widget build(BuildContext context) {
+    chatPageBuildCount++;
     final ink = ZInk.of(Theme.of(context).colorScheme);
     final rows = _state?.rows ?? const <Map<String, dynamic>>[];
     return Scaffold(
@@ -989,6 +942,13 @@ class _ChatPageState extends State<ChatPage> {
     }
     final groups = conversationTurnGroups(rows);
     final lastIndex = groups.length - 1;
+    // P2-conv: `singleTurn` is a pure function of `state.rows` but every
+    // _TurnGroup previously rescanned ALL rows for it — O(groups × rows) per
+    // build. Rows cannot change mid-build, so compute it once here.
+    final singleTurn = rows
+            .where((r) => r['kind'] == 'userInput' || r['kind'] == 'turnHeader')
+            .length <=
+        1;
     final history = _history;
     if (history?.blocksViewport == true) {
       return Center(
@@ -1073,6 +1033,7 @@ class _ChatPageState extends State<ChatPage> {
                 settings: _settingsController.snapshot,
                 isSideChat: widget.isSideChat,
                 isLastTurn: i == lastIndex,
+                singleTurn: singleTurn,
                 expandedOverride:
                     _view.expandedTurns[group.first['rowId'] as int?],
                 searchTargetKey:
@@ -1084,7 +1045,13 @@ class _ChatPageState extends State<ChatPage> {
                   final key = group.first['rowId'] as int?;
                   if (key != null) setState(() => _view.expandedTurns[key] = v);
                 },
-                onEdit: widget.isSideChat ? null : _editMessage,
+                onEdit: widget.isSideChat
+                    ? null
+                    : (row) => _editMessage(row),
+                onSubmitEdit:
+                    widget.isSideChat ? null : _submitMessageEdit,
+                editingRowId: widget.isSideChat ? null : _editingRowId,
+                editFailure: widget.isSideChat ? null : _editFailure,
                 onFork: widget.isSideChat ? null : _forkMessage,
                 forkingRowId: widget.isSideChat ? null : _forkingRowId,
                 feedbackFor: (rowId) => _feedbackByRowId[rowId],
@@ -1222,12 +1189,20 @@ class _TurnGroup extends StatelessWidget {
   final RemoteSettingsSnapshot? settings;
   final bool isSideChat;
   final bool isLastTurn;
+  /// Whether the whole conversation holds at most one user turn. Computed
+  /// once per build in `_buildChat` (pure function of `state.rows`);
+  /// per-group recomputation was an O(rows) scan per turn.
+  final bool singleTurn;
   final bool? expandedOverride;
   final GlobalKey? searchTargetKey;
   final int? searchTargetRowId;
   final LayerLink? searchHighlightLink;
   final ValueChanged<bool>? onToggleExpanded;
-  final ValueChanged<String>? onEdit;
+  final ValueChanged<Map<String, dynamic>>? onEdit;
+  final Future<void> Function(Map<String, dynamic> row, String newText)?
+      onSubmitEdit;
+  final int? editingRowId;
+  final String? editFailure;
   final Future<void> Function(Map<String, dynamic> row)? onFork;
   final int? forkingRowId;
   final String? Function(int? rowId)? feedbackFor;
@@ -1245,12 +1220,16 @@ class _TurnGroup extends StatelessWidget {
     this.settings,
     this.isSideChat = false,
     required this.isLastTurn,
+    required this.singleTurn,
     this.expandedOverride,
     this.searchTargetKey,
     this.searchTargetRowId,
     this.searchHighlightLink,
     this.onToggleExpanded,
     this.onEdit,
+    this.onSubmitEdit,
+    this.editingRowId,
+    this.editFailure,
     this.onFork,
     this.forkingRowId,
     this.feedbackFor,
@@ -1269,7 +1248,7 @@ class _TurnGroup extends StatelessWidget {
     final userRows = rows.sublist(0, lead);
     final assistantRows = rows.sublist(lead);
     final showTurnHeader = assistantRows.isNotEmpty;
-    final running = assistantRows.any(_rowIsActive);
+    final running = assistantRows.any(rowIsActive);
     final header = assistantRows.lastWhere(
       (r) => r['kind'] == 'turnHeader',
       orElse: () => const {},
@@ -1280,10 +1259,6 @@ class _TurnGroup extends StatelessWidget {
         assistantRows.any((r) => r['kind'] == 'assistantText');
     final hasSearchTarget = searchTargetRowId != null &&
         rows.any((row) => row['rowId'] == searchTargetRowId);
-    final singleTurn = state.rows
-            .where((r) => r['kind'] == 'userInput' || r['kind'] == 'turnHeader')
-            .length <=
-        1;
     final defaultOpen = turnDefaultOpen(
       isLastTurn: isLastTurn,
       running: running,
@@ -1306,7 +1281,14 @@ class _TurnGroup extends StatelessWidget {
             searchHighlightLink: userRows[i]['rowId'] == searchTargetRowId
                 ? searchHighlightLink
                 : null,
-            onEdit: onEdit != null ? (text) => onEdit!(text) : null,
+            onEdit: onEdit != null ? (row) => onEdit!(row) : null,
+            onSubmitEdit: onSubmitEdit,
+            editing: editingRowId != null &&
+                userRows[i]['rowId'] == editingRowId,
+            editFailure:
+                editingRowId != null && userRows[i]['rowId'] == editingRowId
+                    ? editFailure
+                    : null,
             readAttachment: (ref) async =>
                 (await transport.attachmentRead(sessionId, ref: ref)).bytes,
           ),
@@ -1532,83 +1514,6 @@ class _TurnGroup extends StatelessWidget {
   }
 }
 
-bool _rowIsActive(Map<String, dynamic> row) {
-  if (row['state'] == 'streaming' || row['state'] == 'running') return true;
-  if (row['kind'] == 'toolCall') {
-    final status = row['status'];
-    if (const ['running', 'waiting', 'inputStreaming', 'pendingApproval']
-        .contains(status)) {
-      return true;
-    }
-    if (row['requiresInteraction'] == true) return true;
-  }
-  return false;
-}
-
-class TurnFileChangeStats {
-  final int files;
-  final int additions;
-  final int deletions;
-  final String? state;
-
-  const TurnFileChangeStats({
-    required this.files,
-    required this.additions,
-    required this.deletions,
-    required this.state,
-  });
-}
-
-TurnFileChangeStats? turnFileChangeStats(Map<String, dynamic> row) {
-  final raw = row['fileChanges'];
-  if (raw is! Map) return null;
-  final map = raw.cast<String, dynamic>();
-  int? nonNegative(Object? value) {
-    if (value is! num || !value.isFinite || value < 0) return null;
-    final result = value.toInt();
-    return result == value ? result : null;
-  }
-
-  final files = nonNegative(map['files']);
-  final additions = nonNegative(map['additions']);
-  final deletions = nonNegative(map['deletions']);
-  if (files == null || additions == null || deletions == null || files < 0) {
-    return null;
-  }
-  return TurnFileChangeStats(
-    files: files,
-    additions: additions,
-    deletions: deletions,
-    state: map['state'] as String?,
-  );
-}
-
-String _turnWorkLabelEnglish({required String state, int? durationMs}) {
-  String duration() {
-    if (durationMs == null || durationMs <= 0) return '';
-    final seconds = durationMs ~/ 1000;
-    if (seconds < 60) return '${seconds}s';
-    final minutes = seconds ~/ 60;
-    final remainder = seconds % 60;
-    return remainder == 0 ? '${minutes}m' : '${minutes}m ${remainder}s';
-  }
-
-  final value = duration();
-  switch (state) {
-    case 'running':
-    case 'inputStreaming':
-      return value.isEmpty ? 'Working' : 'Working $value';
-    case 'completedInterrupted':
-    case 'cancelled':
-    case 'interrupted':
-    case 'failed':
-    case 'error':
-      return 'Stopped';
-    default:
-      return value.isEmpty ? 'Worked' : 'Worked $value';
-  }
-}
-
 String _conversationUiText(
     BuildContext context, String chinese, String english) {
   // Standalone summary widgets historically default to Chinese in focused
@@ -1642,7 +1547,7 @@ class _TurnTrigger extends StatelessWidget {
     final label = _conversationUiText(
         context,
         turnWorkLabel(state: st, durationMs: ms),
-        _turnWorkLabelEnglish(state: st, durationMs: ms));
+        turnWorkLabelEnglish(state: st, durationMs: ms));
     return InkWell(
       onTap: onToggle,
       child: Container(
@@ -1702,9 +1607,13 @@ class SearchHighlightPainter extends CustomPainter {
       oldDelegate.rects != rects || oldDelegate.color != color;
 }
 
-class _UserBubble extends StatelessWidget {
+class _UserBubble extends StatefulWidget {
   final Map<String, dynamic> row;
-  final ValueChanged<String>? onEdit;
+  final ValueChanged<Map<String, dynamic>>? onEdit;
+  final Future<void> Function(Map<String, dynamic> row, String newText)?
+      onSubmitEdit;
+  final bool editing;
+  final String? editFailure;
   final Future<Uint8List> Function(String ref)? readAttachment;
   final LayerLink? searchHighlightLink;
 
@@ -1712,51 +1621,170 @@ class _UserBubble extends StatelessWidget {
     super.key,
     required this.row,
     this.onEdit,
+    this.onSubmitEdit,
+    this.editing = false,
+    this.editFailure,
     this.readAttachment,
     this.searchHighlightLink,
   });
 
   @override
+  State<_UserBubble> createState() => _UserBubbleState();
+}
+
+class _UserBubbleState extends State<_UserBubble> {
+  TextEditingController? _editController;
+  final _editFocus = FocusNode();
+
+  @override
+  void dispose() {
+    _editController?.dispose();
+    _editFocus.dispose();
+    super.dispose();
+  }
+
+  void _beginEdit(String text) {
+    setState(() {
+      _editController?.dispose();
+      _editController = TextEditingController(text: text)
+        ..selection = TextSelection(
+            baseOffset: text.length, extentOffset: text.length);
+    });
+    widget.onEdit?.call(widget.row);
+    // Focus after the field mounts this frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _editFocus.requestFocus();
+    });
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _editController?.dispose();
+      _editController = null;
+    });
+    _editFocus.unfocus();
+  }
+
+  Future<void> _submitEdit() async {
+    final controller = _editController;
+    final text = controller?.text ?? '';
+    if (text.trim().isEmpty) return;
+    _editFocus.unfocus();
+    await widget.onSubmitEdit?.call(widget.row, text);
+    if (mounted && widget.editing == false) {
+      setState(() {
+        _editController?.dispose();
+        _editController = null;
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final ink = ZInk.of(Theme.of(context).colorScheme);
-    final text = row['text'] as String? ?? '';
-    final attachments = switch (row['attachments']) {
+    final text = widget.row['text'] as String? ?? '';
+    final attachments = switch (widget.row['attachments']) {
       final List items => items
           .whereType<Map>()
           .map((e) => e.cast<String, dynamic>())
           .toList(growable: false),
       _ => const <Map<String, dynamic>>[],
     };
-    final content = Align(
+    final editing = widget.editing && _editController != null;
+
+    // Official user bubble: a bordered rounded container around the message,
+    // not bare text. While editing, the same container hosts an in-place
+    // TextField so the message never jumps to the composer.
+    final Widget content = Align(
       alignment: Alignment.centerRight,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (attachments.isNotEmpty) ...[
-            SentAttachmentPills(
-                attachments: attachments, readAttachment: readAttachment),
-            const SizedBox(height: 8),
-          ],
-          if (text.isNotEmpty)
-            SelectableText(
-              text,
-              style: TextStyle(
-                fontSize: 14,
-                height: 1.5,
-                color: ink.text,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: editing ? ink.background : ink.messageSurface,
+          border: Border.all(
+              color: editing ? ink.text : ink.messageBorder,
+              width: editing ? 1.4 : 1),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (attachments.isNotEmpty && !editing) ...[
+              SentAttachmentPills(
+                  attachments: attachments,
+                  readAttachment: widget.readAttachment),
+              const SizedBox(height: 8),
+            ],
+            if (editing)
+              TextField(
+                controller: _editController,
+                focusNode: _editFocus,
+                maxLines: null,
+                minLines: 1,
+                style: TextStyle(fontSize: 14, height: 1.5, color: ink.text),
+                decoration: const InputDecoration(
+                    isDense: true, border: InputBorder.none),
+                textInputAction: TextInputAction.newline,
+              )
+            else if (text.isNotEmpty)
+              SelectableText(
+                text,
+                style: TextStyle(
+                  fontSize: 14,
+                  height: 1.5,
+                  color: ink.text,
+                ),
               ),
+            if (widget.editFailure != null && editing) ...[
+              const SizedBox(height: 6),
+              Text(widget.editFailure!,
+                  style: TextStyle(
+                      fontSize: 12, color: Theme.of(context).colorScheme.error)),
+            ],
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: editing
+                  ? MainAxisAlignment.start
+                  : MainAxisAlignment.end,
+              children: [
+                if (editing) ...[
+                  TextButton.icon(
+                    onPressed: _submitEdit,
+                    icon: const Icon(Icons.send, size: 14),
+                    label: Text(
+                        uiText(context, '重新发送', 'Resend'),
+                        style: const TextStyle(fontSize: 12)),
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(0, 30)),
+                  ),
+                  const SizedBox(width: 4),
+                  TextButton(
+                    onPressed: _cancelEdit,
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        minimumSize: const Size(0, 30)),
+                    child: Text(uiText(context, '取消', 'Cancel'),
+                        style: const TextStyle(fontSize: 12)),
+                  ),
+                ] else
+                  _MessageActions(
+                    text: text,
+                    onEdit: widget.row['entityId'] != null &&
+                            widget.onEdit != null &&
+                            widget.onSubmitEdit != null
+                        ? () => _beginEdit(text)
+                        : null,
+                  ),
+              ],
             ),
-          _MessageActions(
-            text: text,
-            onEdit: row['entityId'] != null && onEdit != null
-                ? () => onEdit!(text)
-                : null,
-          ),
-        ],
+          ],
+        ),
       ),
     );
-    final link = searchHighlightLink;
+    final link = widget.searchHighlightLink;
     return link == null
         ? content
         : CompositedTransformTarget(link: link, child: content);
@@ -1852,16 +1880,25 @@ class _ActionIcon extends StatelessWidget {
       required this.onTap});
 
   @override
-  Widget build(BuildContext context) => Tooltip(
-      message: label,
-      child: SizedBox(
-          width: 28,
-          height: 28,
-          child: IconButton(
-              onPressed: onTap,
-              icon: Icon(icon, size: 14, color: ink.subtlest),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 28, minHeight: 28))));
+  Widget build(BuildContext context) {
+    // Compact shells raise the touch target; the glyph keeps its size.
+    final compact = MobileLayout.isCompact(
+        MediaQuery.sizeOf(context).width -
+            MediaQuery.paddingOf(context).horizontal,
+        MediaQuery.textScalerOf(context));
+    final extent = compact ? 48.0 : 28.0;
+    return Tooltip(
+        message: label,
+        child: SizedBox(
+            width: extent,
+            height: extent,
+            child: IconButton(
+                onPressed: onTap,
+                icon: Icon(icon, size: 14, color: ink.subtlest),
+                padding: EdgeInsets.zero,
+                constraints: BoxConstraints(
+                    minWidth: extent, minHeight: extent))));
+  }
 }
 
 /// Assistant 正文和代码按当前客户端主题及代码字号渲染。
@@ -2011,532 +2048,4 @@ class _TimelineMarker extends StatelessWidget {
     );
   }
 }
-
-/// 变更摘要卡（utt，§3）：`rounded-xl border bg-card`，头部 chevron +
-/// 「N 个文件已更改」+ 独立新增/删除统计，展开文件行。
-class ConversationChangeSummary extends StatefulWidget {
-  final Map<String, dynamic> row;
-  final FileChangesReviewController Function(Map<String, dynamic> row)?
-      createReview;
-  final void Function(String path)? onOpenReview;
-  final String? reviewCacheVersion;
-
-  const ConversationChangeSummary({
-    super.key,
-    required this.row,
-    this.createReview,
-    this.onOpenReview,
-    this.reviewCacheVersion,
-  });
-
-  @override
-  State<ConversationChangeSummary> createState() => _ChangeSummaryCardState();
-}
-
-class _ChangeSummaryCardState extends State<ConversationChangeSummary> {
-  bool _expanded = false;
-  FileChangesReviewController? _review;
-
-  bool get _canRewind {
-    final fileChanges = widget.row['fileChanges'];
-    final state = fileChanges is Map ? fileChanges['state'] : null;
-    final actions = widget.row['actions'];
-    return widget.row['state'] != 'running' &&
-        state != 'reverted' &&
-        actions is Map &&
-        actions['canRewindFiles'] == true;
-  }
-
-  void _loadReview() {
-    final future = _review?.load();
-    if (future != null) {
-      unawaited(future.then(
-        (_) {
-          // The file rows may come from the loaded payload when the summary
-          // row carries no inline files; rebuild once data arrives.
-          if (mounted) setState(() {});
-        },
-        onError: (Object _) {/* The review body shows retry. */},
-      ));
-    }
-  }
-
-  String _summaryText(BuildContext context, String chinese, String english) {
-    return turnFileChangeStats(widget.row) == null
-        ? chinese
-        : uiText(context, chinese, english);
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _review = widget.createReview?.call(widget.row);
-    if (_expanded) _loadReview();
-  }
-
-  @override
-  void didUpdateWidget(ConversationChangeSummary oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    final nextScope = widget.createReview?.call(widget.row);
-    final oldKey = _review?.scope.cacheKey;
-    final newKey = nextScope?.scope.cacheKey;
-    if (oldKey != newKey ||
-        oldWidget.reviewCacheVersion != widget.reviewCacheVersion) {
-      _review?.dispose();
-      _review = nextScope;
-      if (_expanded) _loadReview();
-    } else {
-      nextScope?.dispose();
-    }
-  }
-
-  @override
-  void dispose() {
-    _review?.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final ink = ZInk.of(Theme.of(context).colorScheme);
-    var files = switch (widget.row['files']) {
-      final List l =>
-        l.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList(),
-      _ => const <Map<String, dynamic>>[],
-    };
-    final reviewResult = _review?.result;
-    if (files.isEmpty &&
-        reviewResult != null &&
-        reviewResult.items.isNotEmpty) {
-      // Some turns carry only aggregate stats in the summary row; the file
-      // rows come from the loaded review payload instead (U21 on-device
-      // follow-up: expanding must never render an empty list).
-      files = [
-        for (final item in reviewResult.items)
-          {
-            'path': item.path,
-            'addedLines': item.additions,
-            'removedLines': item.deletions,
-          },
-      ];
-    }
-    final officialStats = turnFileChangeStats(widget.row);
-    final count = (widget.row['count'] as num?)?.toInt() ?? files.length;
-    final count2 = (widget.row['fileChanges'] as Map?)?['fileCount'] as num?;
-    final displayCount = officialStats?.files ?? (count2 ?? count);
-    var added = officialStats?.additions ?? 0;
-    var removed = officialStats?.deletions ?? 0;
-    if (officialStats == null) {
-      for (final f in files) {
-        added += (f['addedLines'] as num?)?.toInt() ?? 0;
-        removed += (f['removedLines'] as num?)?.toInt() ?? 0;
-      }
-    }
-    return Container(
-      decoration: BoxDecoration(
-        color: ink.card,
-        borderRadius: BorderRadius.circular(ZRadius.xl),
-        border: Border.all(color: ink.border),
-      ),
-      child: Column(
-        children: [
-          InkWell(
-            onTap: () {
-              final next = !_expanded;
-              setState(() => _expanded = next);
-              if (next) _loadReview();
-            },
-            child: Container(
-              height: 40,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                children: [
-                  AnimatedRotation(
-                    turns: _expanded ? 0.25 : 0,
-                    duration: const Duration(milliseconds: 150),
-                    child: LucideIcon('chevron-right',
-                        size: 12, color: ink.subtlest),
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Flexible(
-                          child: Text(
-                            _summaryText(context, '$displayCount 个文件已更改',
-                                '$displayCount files changed'),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: ink.text,
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '+$added',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontFamily: 'monospace',
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                            color: ink.diffAdded,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          '-$removed',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontFamily: 'monospace',
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                            color: ink.diffRemoved,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (_canRewind) ...[
-                    const SizedBox(width: 8),
-                    TextButton(
-                      style: TextButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                        padding: const EdgeInsets.symmetric(horizontal: 6),
-                        minimumSize: const Size(0, 32),
-                      ),
-                      onPressed: _review?.rewindOpen != true
-                          ? () => _showRewindDialog(context)
-                          : null,
-                      child: Text(_summaryText(context, '撤销', 'Undo')),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-          if (_expanded) _buildReviewBody(ink),
-          if (_expanded)
-            for (final f in files)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                child: InkWell(
-                  // U21: the whole row opens the file's diff in the review
-                  // panel — same destination as the Review button.
-                  onTap: widget.onOpenReview == null
-                      ? null
-                      : () =>
-                          widget.onOpenReview!(f['path'] as String? ?? ''),
-                  borderRadius: BorderRadius.circular(8),
-                  child: Row(
-                    children: [
-                      const SizedBox(width: 12),
-                      LucideIcon(_fileIconFor(f['path'] as String? ?? ''),
-                          size: 14, color: ink.subtlest),
-                      const SizedBox(width: 6),
-                      Flexible(
-                          flex: 3,
-                          child: Text(_fileBasename(f['path'] as String? ?? ''),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: ink.text,
-                              ))),
-                    if (_fileDirectory(f['path'] as String? ?? '')
-                        .isNotEmpty) ...[
-                      const SizedBox(width: 4),
-                      Flexible(
-                          flex: 2,
-                          child:
-                              Text(_fileDirectory(f['path'] as String? ?? ''),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: ink.subtlest,
-                                  ))),
-                    ],
-                    const SizedBox(width: 8),
-                    Text(
-                      '+${f['addedLines'] ?? 0} -${f['removedLines'] ?? 0}',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontFamily: 'monospace',
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                        color: ink.text.withValues(alpha: 0.5),
-                      ),
-                    ),
-                    if (widget.onOpenReview != null)
-                      TextButton(
-                        style: TextButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.symmetric(horizontal: 6),
-                          minimumSize: const Size(0, 28),
-                        ),
-                        onPressed: () =>
-                            widget.onOpenReview!(f['path'] as String? ?? ''),
-                        child: Text(uiText(context, '审查', 'Review')),
-                      ),
-                    const SizedBox(width: 8),
-                  ],
-                ),
-              ),
-              ),
-        ],
-      ),
-    );
-  }
-
-  /// Official file rows separate a type icon, file name and directory.
-  String _fileBasename(String path) {
-    if (path.isEmpty) return '';
-    final slash = path.lastIndexOf('/');
-    final back = path.lastIndexOf('\\');
-    final cut = slash > back ? slash : back;
-    return cut >= 0 ? path.substring(cut + 1) : path;
-  }
-
-  String _fileDirectory(String path) {
-    final slash = path.lastIndexOf('/');
-    final back = path.lastIndexOf('\\');
-    final cut = slash > back ? slash : back;
-    return cut >= 0 ? path.substring(0, cut + 1) : '';
-  }
-
-  String _fileIconFor(String path) {
-    final lower = path.toLowerCase();
-    if (lower.endsWith('.md') || lower.endsWith('.markdown')) {
-      return 'file-text';
-    }
-    if (lower.endsWith('.png') ||
-        lower.endsWith('.jpg') ||
-        lower.endsWith('.jpeg') ||
-        lower.endsWith('.gif') ||
-        lower.endsWith('.webp')) {
-      return 'file-image';
-    }
-    const codeExtensions = [
-      '.dart',
-      '.js',
-      '.ts',
-      '.json',
-      '.yaml',
-      '.yml',
-      '.py',
-      '.kt',
-      '.java',
-      '.c',
-      '.cc',
-      '.cpp',
-      '.h',
-      '.hpp',
-      '.sh',
-      '.html',
-      '.css',
-      '.rs',
-      '.go',
-    ];
-    for (final extension in codeExtensions) {
-      if (lower.endsWith(extension)) return 'file-code';
-    }
-    return 'file';
-  }
-
-  /// Expanded summaries list the changed files and surface load failures;
-  /// the red/green diff itself opens in the right-hand review panel when a
-  /// file row is activated (official flow: summary → file list → file diff).
-  Widget _buildReviewBody(InkTokens ink) {
-    final review = _review;
-    if (review == null) return const SizedBox.shrink();
-    return AnimatedBuilder(
-      animation: review,
-      builder: (context, _) {
-        final result = review.result;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (review.status == FileChangesStatus.loading && result == null)
-              const Padding(
-                padding: EdgeInsets.all(12),
-                child: Center(
-                    child: SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )),
-              )
-            else if (review.status == FileChangesStatus.error && result == null)
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(children: [
-                  Text(
-                    '暂时无法读取文件变更。',
-                    style: TextStyle(
-                        color: ink.text.withValues(alpha: 0.65), fontSize: 13),
-                  ),
-                  TextButton(onPressed: review.retry, child: const Text('重试')),
-                ]),
-              ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _showRewindDialog(BuildContext context) async {
-    final review = _review;
-    if (review == null) return;
-    review.openRewind();
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AnimatedBuilder(
-        animation: review,
-        builder: (context, _) {
-          final preview = review.rewindPreview;
-          final failure = review.rewindResult?.status == 'rejected' ||
-                  review.rewindResult?.status == 'failed' ||
-                  review.rewindResult?.status == 'stale'
-              ? (review.rewindResult?.message ?? '文件撤销请求失败，请稍后再试。')
-              : review.rewindApplyError != null
-                  ? '文件撤销请求失败，请稍后再试。'
-                  : null;
-          return AlertDialog(
-            title: const Text('撤销文件改动'),
-            content: SizedBox(
-              width: 460,
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('撤销前会重新检查当前文件内容；如果文件已被其他进程修改，本次不会写入任何文件。'),
-                    const SizedBox(height: 12),
-                    if (review.rewindLoading)
-                      const Padding(
-                        padding: EdgeInsets.all(12),
-                        child: Center(child: CircularProgressIndicator()),
-                      )
-                    else if (review.rewindError != null)
-                      Text('文件撤销请求失败，请稍后再试。')
-                    else if (preview == null)
-                      const Text('暂时没有预检结果。')
-                    else ...[
-                      _RewindFileSection(
-                        title: preview.safeFiles.isEmpty
-                            ? null
-                            : '可安全撤销 ${preview.safeFiles.length}',
-                        files: preview.safeFiles,
-                      ),
-                      _RewindFileSection(
-                        title: preview.unsafeFiles.isEmpty
-                            ? null
-                            : '不能安全撤销 ${preview.unsafeFiles.length}',
-                        files: preview.unsafeFiles,
-                      ),
-                      _RewindFileSection(
-                        title: preview.ignoredFiles.isEmpty
-                            ? null
-                            : '已忽略 ${preview.ignoredFiles.length}',
-                        files: preview.ignoredFiles,
-                      ),
-                      if (!preview.canApply)
-                        const Padding(
-                          padding: EdgeInsets.only(top: 8),
-                          child: Text('存在不能安全撤销的文件，未写入任何文件。'),
-                        ),
-                    ],
-                    if (failure != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(failure),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed:
-                    review.rewindApplying ? null : () => Navigator.pop(context),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                onPressed: review.rewindApplying ||
-                        preview == null ||
-                        !preview.canApply
-                    ? null
-                    : () async {
-                        final result = await review.applyRewind();
-                        if ((result.status == 'accepted' ||
-                                result.status == 'duplicate') &&
-                            context.mounted) {
-                          Navigator.pop(context);
-                        }
-                      },
-                child: const Text('撤销文件'),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-    review.closeRewind();
-  }
-}
-
-class _RewindFileSection extends StatelessWidget {
-  final String? title;
-  final List<FileRewindPreviewFile> files;
-
-  const _RewindFileSection({required this.title, required this.files});
-
-  @override
-  Widget build(BuildContext context) {
-    final ink = ZInk.of(Theme.of(context).colorScheme);
-    if (title == null || files.isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title!, style: const TextStyle(fontWeight: FontWeight.w600)),
-          for (final file in files)
-            Container(
-              margin: const EdgeInsets.only(top: 6),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              decoration: BoxDecoration(
-                border: Border.all(color: ink.border),
-                borderRadius: BorderRadius.circular(ZRadius.sm),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      file.path,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 12,
-                        color: ink.text.withValues(alpha: 0.8),
-                      ),
-                    ),
-                  ),
-                  Text(
-                    '${file.operationCount} 次修改',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: ink.subtlest,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 

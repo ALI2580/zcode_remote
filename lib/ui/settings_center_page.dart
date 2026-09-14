@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'
-    show Clipboard, ClipboardData, MethodChannel, MissingPluginException;
+    show MethodChannel, MissingPluginException;
 import '../notifications/task_target.dart';
 import '../protocol/channel_client.dart';
 import '../protocol/entitlement.dart';
@@ -25,10 +25,6 @@ import 'commands_settings.dart';
 import 'command_form_dialog.dart';
 import 'subagents_settings.dart';
 import '../state/plugin_catalog.dart';
-import '../update/app_version.dart';
-import '../update/update_channel.dart';
-import '../update/update_checker.dart';
-import '../update/update_downloader.dart';
 import 'upgrade_page.dart';
 import 'usage/usage_page.dart';
 import 'notification_settings_page.dart';
@@ -47,6 +43,9 @@ import 'model_provider_editor.dart';
 import 'skills_settings.dart';
 import 'settings_navigation_result.dart';
 import 'hooks_settings.dart';
+import 'settings/general_settings_page.dart';
+import 'settings/settings_widgets.dart';
+import 'settings/update_about_settings_page.dart';
 
 class SettingsCenterPage extends StatefulWidget {
   const SettingsCenterPage(
@@ -74,10 +73,11 @@ class SettingsCenterPage extends StatefulWidget {
 class _SettingsCenterPageState extends State<SettingsCenterPage> {
   late String _section;
   late bool _devicesVisited, _usageVisited;
-  bool _checking = false;
-  String? _updateError;
-  UpdateInfo? _update;
-  UpdateDownloader? _downloader;
+
+  /// Compact phones show a section list first; picking a section pushes
+  /// the detail view inside the same route (PopScope pops back to the list,
+  /// not out of settings).
+  bool _narrowListMode = true;
   RemoteSettingsController? _remoteSettings;
   // Remote settings are owned by AppSessions so ChatPage instances keep the
   // same confirmed projection after this route is closed.
@@ -129,14 +129,6 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
   final _familyOptionsFailed = <String>{};
   int _familyOptionsGeneration = 0;
   RemoteProfile? _profile;
-  // Official general page: the integrated-shell select renders only when the
-  // desktop reports platform win32, and the shell options come from
-  // `systemService.listIntegratedTerminalShells`. Both are read-only calls;
-  // failures degrade exactly like the official page (select hidden or the
-  // auto-only entry).
-  String? _remotePlatform;
-  List<Map<String, Object?>> _terminalShells = const [];
-  int _systemInfoGeneration = 0;
   // Official browser page "开启内置浏览器控制" toggles the browser-use
   // official plugin through the same verified pluginManagement write as
   // the plugins section; it is not a settingService key.
@@ -162,21 +154,14 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
   void initState() {
     super.initState();
     _section = widget.initialSection;
+    // 'general' is the default section fallback, not an explicit deep link:
+    // entering settings on a phone shows the section list first. An explicit
+    // initialSection (deep link / restore) opens that detail directly.
+    _narrowListMode = widget.initialSection == 'general';
     _devicesVisited = _section == 'devices';
     _usageVisited = _section == 'usage';
     unawaited(widget.preferences.load());
-    unawaited(updateChannelSettings.load().then((_) {
-      if (mounted) setState(() {});
-    }));
     _syncRemoteSettings();
-  }
-
-  void _startDownload(BuildContext context) {
-    final assets = _update?.assets ?? [];
-    if (assets.isEmpty) return;
-    final asset = assets.first;
-    _downloader ??= UpdateDownloader();
-    _downloader!.download(url: asset.apkUrl);
   }
 
   @override
@@ -196,7 +181,6 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
     _commandsFormTargetMonitors.clear();
     _skillsCatalog?.dispose();
     _mcpCatalog?.dispose();
-    _downloader?.dispose();
     super.dispose();
   }
 
@@ -367,7 +351,6 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
       if (!mounted || !identical(_remoteSettings, settings)) return;
       unawaited(settings.refresh());
     });
-    unawaited(_loadSystemInfo(monitor));
     final browserPlugins = widget.sessions.pluginCatalogForMonitor(
       monitor,
       selectedScope: 'user',
@@ -881,25 +864,6 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
       catalog: catalog,
       onComposerRefresh: () => _invalidateComposerPrep(scopeMonitor: monitor!),
     );
-  }
-
-  Future<void> _checkUpdate() async {
-    if (_checking) return;
-    setState(() {
-      _checking = true;
-      _updateError = null;
-    });
-    try {
-      final result = await checkForUpdates();
-      if (mounted) setState(() => _update = result);
-    } catch (_) {
-      if (mounted) {
-        setState(() => _updateError = uiText(
-            context, '检查失败，请稍后重试', 'Could not check for updates. Try again.'));
-      }
-    } finally {
-      if (mounted) setState(() => _checking = false);
-    }
   }
 
   Future<bool> _saveProviderModels(
@@ -1693,12 +1657,23 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
         final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
         final wideBreakpoint = 264 + 400 * textScale.clamp(1.0, 2.0);
         final wide = MediaQuery.sizeOf(context).width >= wideBreakpoint;
-        return Scaffold(
+        return PopScope(
+            canPop: wide || _narrowListMode,
+            onPopInvokedWithResult: (didPop, result) {
+              if (!didPop && !wide && _narrowListMode == false) {
+                setState(() => _narrowListMode = true);
+              }
+            },
+            child: Scaffold(
             // Desktop settings is a two-pane surface with its own back entry;
             // the compact route keeps the normal Material app-bar back stack.
             appBar: wide
                 ? null
-                : AppBar(title: Text(uiText(context, '设置', 'Settings'))),
+                : AppBar(
+                    title: Text(_narrowListMode
+                        ? uiText(context, '设置', 'Settings')
+                        : uiText(context, labels[_section]!.$2,
+                            labels[_section]!.$3))),
             body: SafeArea(
                 top: false,
                 child: LayoutBuilder(builder: (context, constraints) {
@@ -1768,40 +1743,48 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
                                 if (hasPageTitle) const SizedBox(height: 24),
                                 gatedWidgets,
                               ]));
+                  if (!wide && _narrowListMode) {
+                    // Section list first: every entry is a full-height row
+                    // with its icon and label — no hidden dropdown.
+                    return SafeArea(
+                        child: ListView(
+                            padding:
+                                const EdgeInsets.fromLTRB(8, 8, 8, 24),
+                            children: [
+                          for (final entry in labels.entries)
+                            ListTile(
+                                key: ValueKey(
+                                    'settings-section-${entry.key}'),
+                                minLeadingWidth: 24,
+                                leading: LucideIcon(entry.value.$1,
+                                    size: 16, color: ink.subtlest),
+                                title: Text(
+                                    uiText(context, entry.value.$2,
+                                        entry.value.$3),
+                                    style: const TextStyle(fontSize: 14)),
+                                minVerticalPadding: 12,
+                                onTap: () {
+                                  _selectSection(entry.key);
+                                  setState(() => _narrowListMode = false);
+                                }),
+                          if (widget.remoteMonitor != null)
+                            ListTile(
+                                key: const ValueKey(
+                                    'settings-section-onboarding'),
+                                minLeadingWidth: 24,
+                                leading: LucideIcon('rocket',
+                                    size: 16, color: ink.subtlest),
+                                title: Text(
+                                    uiText(context, '引导', 'Onboarding'),
+                                    style:
+                                        const TextStyle(fontSize: 14)),
+                                minVerticalPadding: 12,
+                                onTap: () =>
+                                    unawaited(_openOnboardingDialog())),
+                        ]));
+                  }
                   if (!wide) {
                     return Column(children: [
-                      Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 20, vertical: 8),
-                          child: DropdownButton<String>(
-                              isExpanded: true,
-                              isDense: true,
-                              value: _section,
-                              items: [
-                                for (final entry in labels.entries)
-                                  DropdownMenuItem(
-                                      value: entry.key,
-                                      child: Text(uiText(context,
-                                          entry.value.$2, entry.value.$3))),
-                                // Official 数据与统计 "引导" entry; the compact
-                                // select opens the dialog instead of switching
-                                // sections.
-                                if (widget.remoteMonitor != null)
-                                  DropdownMenuItem(
-                                      value: '_onboarding',
-                                      child: Text(uiText(
-                                          context, '引导', 'Onboarding'))),
-                              ],
-                              onChanged: (value) {
-                                if (value == '_onboarding') {
-                                  unawaited(_openOnboardingDialog());
-                                  return;
-                                }
-                                if (value != null) {
-                                  _selectSection(value);
-                                }
-                              })),
-                      const Divider(height: 1),
                       Expanded(
                           child: Column(children: [
                         connectionBanner,
@@ -1964,14 +1947,20 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
                                       child: content)))),
                     ]))
                   ]);
-                })));
+                }))));
       });
 
   List<Widget> _content(BuildContext context, InkTokens ink) {
     final prefs = widget.preferences;
     switch (_section) {
       case 'general':
-        return _generalContent(context, ink);
+        return [
+          GeneralSettingsPage(
+            preferences: prefs,
+            remoteSettings: _remoteSettings,
+            remoteMonitor: widget.remoteMonitor,
+          ),
+        ];
       case 'appearance':
         return [
           AppearanceSettingsPage(
@@ -2012,114 +2001,10 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
       case 'usage':
         return const [];
       default:
-        return [
-          Text('ZcodeRemote $appVersion ($appBuildNumber)',
-              style: const TextStyle(fontWeight: FontWeight.w500)),
-          const SizedBox(height: 20),
-          SwitchListTile.adaptive(
-              contentPadding: EdgeInsets.zero,
-              title:
-                  Text(uiText(context, '接收 Beta 更新', 'Receive beta updates')),
-              value: updateChannelSettings.receiveBetaUpdates,
-              onChanged: (value) async {
-                await updateChannelSettings.setReceiveBetaUpdates(value);
-                if (mounted) setState(() {});
-              }),
-          const SizedBox(height: 12),
-          Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton(
-                  onPressed: _checking ? null : _checkUpdate,
-                  child: Text(_checking
-                      ? uiText(context, '正在检查…', 'Checking…')
-                      : uiText(context, '检查更新', 'Check for updates')))),
-          if (_updateError != null)
-            Padding(
-                padding: const EdgeInsets.only(top: 16),
-                child: Text(_updateError!,
-                    style: TextStyle(color: ink.diffRemoved))),
-          if (_update != null) ...[
-            const SizedBox(height: 20),
-            Text(_update!.isNewer
-                ? uiText(context, '发现新版本 ${_update!.latestVersion}',
-                    'New version ${_update!.latestVersion}')
-                : uiText(context, '当前已是最新版本', 'You are up to date')),
-            if (_update!.body?.trim().isNotEmpty == true)
-              Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: SelectableText(_update!.body!)),
-            if (_update!.isNewer) ...[
-              Align(
-                  alignment: Alignment.centerLeft,
-                  child: Wrap(spacing: 8, children: [
-                    TextButton(
-                        onPressed: () async {
-                          await Clipboard.setData(
-                              ClipboardData(text: _update!.releaseUrl));
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                                content: Text(uiText(context, '下载页面地址已复制',
-                                    'Download page copied'))));
-                          }
-                        },
-                        child: Text(
-                            uiText(context, '复制下载页面地址', 'Copy download page'))),
-                    ListenableBuilder(
-                        listenable: _downloader ?? Listenable.merge([]),
-                        builder: (context, _) {
-                          final dl = _downloader;
-                          final prog = dl?.progress;
-                          return FilledButton(
-                              onPressed: _update!.assets.isEmpty ||
-                                      (dl?.isBusy ?? false)
-                                  ? null
-                                  : () => _startDownload(context),
-                              child: Text((prog?.state ==
-                                          DownloadState.downloading ||
-                                      prog?.state == DownloadState.verifying)
-                                  ? uiText(context, '下载中…', 'Downloading…')
-                                  : uiText(context, '下载 APK', 'Download APK')));
-                        }),
-                  ])),
-              if (_downloader != null)
-                ListenableBuilder(
-                    listenable: _downloader!,
-                    builder: (context, _) {
-                      final prog = _downloader!.progress;
-                      return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            if (prog.state == DownloadState.downloading &&
-                                prog.fraction != null)
-                              Padding(
-                                  padding: const EdgeInsets.only(top: 12),
-                                  child: LinearProgressIndicator(
-                                      value: prog.fraction)),
-                            if (prog.state == DownloadState.verifying)
-                              Padding(
-                                  padding: const EdgeInsets.only(top: 12),
-                                  child: Text(
-                                      uiText(context, '校验中…', 'Verifying…'))),
-                            if (prog.state == DownloadState.done &&
-                                prog.filePath != null)
-                              Padding(
-                                  padding: const EdgeInsets.only(top: 8),
-                                  child: Text(
-                                      uiText(context, '已下载到 ${prog.filePath}',
-                                          'Downloaded to ${prog.filePath}'),
-                                      style: TextStyle(
-                                          fontSize: 12, color: ink.subtlest))),
-                            if (prog.state == DownloadState.failed &&
-                                prog.error != null)
-                              Padding(
-                                  padding: const EdgeInsets.only(top: 8),
-                                  child: Text(prog.error!,
-                                      style:
-                                          TextStyle(color: ink.diffRemoved))),
-                          ]);
-                    }),
-            ],
-          ],
+        return const [
+          // S1: "更新与关于" content moved to its own page widget, which
+          // owns the check/download lifecycle (see lib/ui/settings/).
+          UpdateAboutSettingsPage(),
         ];
     }
   }
@@ -2640,7 +2525,7 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
                           return Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                _settingsCard(ink, [
+                                settingsCard(ink, [
                                   Padding(
                                       padding: const EdgeInsets.symmetric(
                                           horizontal: 16, vertical: 12),
@@ -2762,7 +2647,7 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
                                           'No models for this provider.'),
                                       style: TextStyle(color: ink.subtlest))
                                 else
-                                  _settingsCard(ink, [
+                                  settingsCard(ink, [
                                     for (var index = 0;
                                         index < active.models.length;
                                         index++)
@@ -2780,7 +2665,7 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
                                   failedModes ||
                                   _familyOptionsFailed.isNotEmpty;
                           rightPane = hasConnectionContent
-                              ? _settingsCard(ink, [
+                              ? settingsCard(ink, [
                                   Padding(
                                       padding: const EdgeInsets.symmetric(
                                           horizontal: 16, vertical: 8),
@@ -2795,7 +2680,7 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
                           rightPane = Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                _settingsCard(ink, [
+                                settingsCard(ink, [
                                   Padding(
                                       padding: const EdgeInsets.symmetric(
                                           horizontal: 16, vertical: 12),
@@ -3052,8 +2937,8 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
               // Official memory page (1180 capture): one card with the
               // workspace-memory toggle, then a dashed note that the memory
               // details are desktop-only.
-              children.add(_settingsCard(ink, [
-                _remoteToggle(
+              children.add(settingsCard(ink, [
+                remoteToggle(
                     context,
                     ink,
                     controller,
@@ -3091,7 +2976,7 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
                       style: TextStyle(fontSize: 13, color: ink.subtlest))));
               children.add(SizedBox(
                   width: double.infinity,
-                  child: _settingsCard(ink, [
+                  child: settingsCard(ink, [
                     _browserDataAction(context, ink,
                         key: const ValueKey('browser-import-data'),
                         title:
@@ -3126,8 +3011,8 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
                   padding: const EdgeInsets.only(bottom: 8),
                   child: Text(uiText(context, '代码库', 'Codebase'),
                       style: TextStyle(fontSize: 13, color: ink.subtlest))));
-              children.add(_settingsCard(ink, [
-                _remoteTogglePatch(
+              children.add(settingsCard(ink, [
+                remoteTogglePatch(
                     context,
                     ink,
                     controller,
@@ -3144,7 +3029,7 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
                         '自动索引文件数少于 50,000 的新文件夹。',
                         'Automatically index new folders with fewer than '
                             '50,000 files.')),
-                _remoteToggle(
+                remoteToggle(
                     context,
                     ink,
                     controller,
@@ -3193,19 +3078,19 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
           final saving = catalog?.operation != null;
           Widget trailing;
           if (loading) {
-            trailing = _remoteSpinner();
+            trailing = remoteSpinner();
           } else if (item == null || !item.installed) {
-            trailing = _settingsSwitch(value: false, onChanged: null);
+            trailing = settingsSwitch(value: false, onChanged: null);
           } else {
-            trailing = _settingsSwitch(
+            trailing = settingsSwitch(
                 key: const ValueKey('browser-control-toggle'),
                 value: item.enabled,
                 onChanged: saving
                     ? null
                     : (next) => unawaited(catalog.enable(item!, next)));
           }
-          return _settingsCard(ink, [
-            _settingsRow(
+          return settingsCard(ink, [
+            settingsRow(
                 ink,
                 uiText(context, '开启内置浏览器控制', 'Built-in browser control'),
                 uiText(
@@ -3228,7 +3113,7 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
   }) {
     final disabledReason = uiText(
         context, '仅支持在 ZCode 桌面端执行。', 'Available in the ZCode desktop app.');
-    return _settingsRow(
+    return settingsRow(
       ink,
       title,
       description,
@@ -3606,690 +3491,6 @@ class _SettingsCenterPageState extends State<SettingsCenterPage> {
         null) {
       _invalidateComposerPrep();
     }
-  }
-
-  /// Shared toggle row for remote settings: spinner while saving, error +
-  /// retry (last attempted value) on failure. Visible state only comes
-  /// from the controller's post-write read-back. Rows render in the
-  /// official card row shape (title + description left, control right).
-  Widget _remoteToggle(
-      BuildContext context,
-      InkTokens ink,
-      RemoteSettingsController controller,
-      String key,
-      String title,
-      bool? value,
-      {bool? officialDefault,
-      String? description}) {
-    final saving = controller.isSaving(key);
-    final failed = controller.saveError(key) != null;
-    Widget trailing;
-    if (value == null && officialDefault == null) {
-      trailing = Text('--', style: TextStyle(color: ink.subtlest));
-    } else if (saving) {
-      trailing = const SizedBox(
-          width: 18,
-          height: 18,
-          child: CircularProgressIndicator(strokeWidth: 2));
-    } else {
-      // A missing key falls back to the official component default
-      // (`?? true` / `?? false` in the bundle); toggling it stores the
-      // explicit value.
-      trailing = _settingsSwitch(
-          key: ValueKey('remote-toggle-$key'),
-          value: value ?? officialDefault!,
-          onChanged: controller.remoteOperationsAvailable
-              ? (next) => unawaited(controller.update(key, next))
-              : null);
-    }
-    return Column(children: [
-      _settingsRow(ink, title, description, trailing),
-      _saveFailedColumn(
-          context,
-          failed,
-          saving,
-          controller.remoteOperationsAvailable
-              ? () => unawaited(controller.updatePatch(
-                  (controller.lastAttempt(key) ?? const {})
-                      as Map<String, Object?>))
-              : null),
-    ]);
-  }
-
-  /// Toggle variant for multi-key official patches (e.g. the indexing
-  /// switch also stamps its user-configured flag in the same call).
-  Widget _remoteTogglePatch(
-      BuildContext context,
-      InkTokens ink,
-      RemoteSettingsController controller,
-      Map<String, Object?> patch,
-      String patchKey,
-      String title,
-      bool? value,
-      {String? description}) {
-    final saving = controller.isSaving(patchKey);
-    final failed = controller.saveError(patchKey) != null;
-    Widget trailing;
-    if (value == null) {
-      trailing = Text('--', style: TextStyle(color: ink.subtlest));
-    } else if (saving) {
-      trailing = const SizedBox(
-          width: 18,
-          height: 18,
-          child: CircularProgressIndicator(strokeWidth: 2));
-    } else {
-      trailing = _settingsSwitch(
-          key: ValueKey('remote-toggle-$patchKey'),
-          value: value,
-          onChanged: controller.remoteOperationsAvailable
-              ? (_) => unawaited(controller.updatePatch(patch))
-              : null);
-    }
-    return Column(children: [
-      _settingsRow(ink, title, description, trailing),
-      _saveFailedColumn(
-          context,
-          failed,
-          saving,
-          controller.remoteOperationsAvailable
-              ? () => unawaited(controller.updatePatch(
-                  (controller.lastAttempt(patchKey) ?? const {})
-                      as Map<String, Object?>))
-              : null),
-    ]);
-  }
-
-  /// Remote part of the General section. The official web client writes
-  /// `taskAutoArchiveEnabled` via switch and `taskAutoArchiveOlderThanDays`
-  /// via select with fixed 3/7/14/30-day options (IntlProvider bundle).
-  Future<void> _loadSystemInfo(WorkspaceMonitor monitor) async {
-    final generation = ++_systemInfoGeneration;
-    String? platform;
-    var shells = const <Map<String, Object?>>[];
-    try {
-      final info = await monitor.bridge.channels.call(
-          Channels.system, 'info', const [],
-          timeout: const Duration(seconds: 10));
-      if (info is Map && info['platform'] is String) {
-        platform = info['platform'] as String;
-      }
-    } catch (_) {}
-    if (platform == 'win32') {
-      try {
-        final raw = await monitor.bridge.channels.call(
-            Channels.system, 'listIntegratedTerminalShells', const [],
-            timeout: const Duration(seconds: 10));
-        if (raw is List) {
-          shells = [
-            for (final entry in raw)
-              if (entry is Map && entry['id'] is String)
-                {
-                  'id': entry['id'] as String,
-                  'label': entry['label'] is String
-                      ? entry['label'] as String
-                      : entry['id'] as String,
-                  'dialect': entry['dialect'] is String
-                      ? entry['dialect'] as String
-                      : '',
-                  'path':
-                      entry['path'] is String ? entry['path'] as String : '',
-                },
-          ];
-        }
-      } catch (_) {}
-    }
-    if (!mounted || generation != _systemInfoGeneration) return;
-    setState(() {
-      _remotePlatform = platform;
-      _terminalShells = shells;
-    });
-  }
-
-  // Official vQt general page structure: bordered cards whose rows carry a
-  // title + description on the left and the control on the right; text
-  // inputs render as a full-width detail line with a save button.
-  Widget _settingsCard(InkTokens ink, List<Widget> rows) => Container(
-      decoration: BoxDecoration(
-          color: ink.card,
-          border: Border.all(color: ink.border),
-          borderRadius: BorderRadius.circular(12)),
-      child: Column(children: [
-        for (final (index, row) in rows.indexed) ...[
-          if (index > 0) const Divider(height: 1),
-          row,
-        ]
-      ]));
-
-  Widget _settingsRow(
-          InkTokens ink, String title, String? description, Widget control) =>
-      Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: LayoutBuilder(builder: (context, constraints) {
-            final label =
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(title),
-              if (description != null) ...[
-                const SizedBox(height: 4),
-                Text(description,
-                    style: TextStyle(fontSize: 12.5, color: ink.subtlest)),
-              ],
-            ]);
-            if (constraints.maxWidth < 420) {
-              return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    label,
-                    const SizedBox(height: 8),
-                    control,
-                  ]);
-            }
-            return Row(children: [
-              Expanded(child: label),
-              const SizedBox(width: 12),
-              control,
-            ]);
-          }));
-
-  Widget _remoteSpinner() => const SizedBox(
-      width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2));
-
-  /// Keep the compact switch paint while retaining a 48px hit area.
-  Widget _settingsSwitch({
-    Key? key,
-    required bool value,
-    required ValueChanged<bool>? onChanged,
-  }) =>
-      SizedBox(
-          width: 48,
-          height: 36,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onTap: onChanged == null ? null : () => onChanged(!value),
-                ),
-              ),
-              Transform.scale(
-                scale: .62,
-                child: Switch(
-                  key: key,
-                  value: value,
-                  onChanged: onChanged,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-              ),
-            ],
-          ));
-
-  List<Widget> _generalContent(BuildContext context, InkTokens ink) {
-    final prefs = widget.preferences;
-    final remote = _remoteSettings;
-    final languageLabel = switch (prefs.language) {
-      'zh' => '中文简体',
-      'en' => 'English',
-      _ => uiText(context, '跟随系统', 'System'),
-    };
-    return [
-      // Official yQt locale chip under the section title.
-      Align(
-          alignment: Alignment.centerLeft,
-          child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                  color: ink.hover, borderRadius: BorderRadius.circular(8)),
-              child:
-                  Text(languageLabel, style: const TextStyle(fontSize: 12.5)))),
-      const SizedBox(height: 16),
-      _settingsCard(ink, [
-        _settingsRow(
-            ink,
-            uiText(context, '界面语言', 'Interface language'),
-            uiText(context, '选择应用 UI 的显示语言。',
-                'Choose the display language of the app UI.'),
-            SizedBox(
-                width: 220,
-                child: DropdownButton<String>(
-                    value: prefs.language,
-                    isExpanded: true,
-                    underline: const SizedBox(),
-                    items: [
-                      DropdownMenuItem(
-                          value: 'system',
-                          child: Text(uiText(context, '跟随系统', 'System'))),
-                      DropdownMenuItem(
-                          value: 'zh',
-                          child: Text(
-                              uiText(context, '中文简体', 'Simplified Chinese'))),
-                      DropdownMenuItem(
-                          value: 'en',
-                          child: Text(uiText(context, 'English', 'English')))
-                    ],
-                    onChanged: (value) {
-                      if (value != null) unawaited(prefs.setLanguage(value));
-                    }))),
-      ]),
-      if (remote == null) ...[
-        const SizedBox(height: 16),
-        Text(
-            uiText(context, '未连接远端工作区，远端设置不可用。',
-                'No remote workspace connected. Remote settings are unavailable.'),
-            style: TextStyle(color: ink.subtlest)),
-      ] else
-        ListenableBuilder(
-            listenable: remote,
-            builder: (context, _) {
-              final snapshot = remote.snapshot;
-
-              // Official card layout: terminal group, proxy group, behavior
-              // group and archive group. Rows are kept in separate lists so
-              // an optional row (the win32-only shell select) never shifts
-              // the group boundaries.
-              final terminalRows = <Widget>[];
-              final proxyRows = <Widget>[];
-              final behaviorRows = <Widget>[];
-
-              // Terminal card: profile inheritance, font override, the
-              // win32-only integrated shell select and native search.
-              terminalRows.add(_remoteToggle(
-                  context,
-                  ink,
-                  remote,
-                  'terminalInheritSystemProfile',
-                  uiText(context, '继承系统终端 Profile',
-                      'Inherit system terminal profile'),
-                  snapshot.terminalInheritSystemProfile,
-                  officialDefault: true,
-                  description: uiText(
-                      context,
-                      '启动内置终端时尽量继承登录 shell 环境、代理、Kube 变量和本机终端字体。',
-                      'When launching the built-in terminal, inherit login '
-                          'shell environment, proxy, Kubernetes variables, '
-                          'and local terminal font when possible.')));
-              terminalRows.add(_RemoteTextSetting(
-                  controller: remote,
-                  settingKey: 'terminalFontFamily',
-                  title: uiText(context, '终端字体', 'Terminal font'),
-                  description: uiText(
-                      context,
-                      '留空时自动探测系统终端配置；填写后作为 ZCode 终端的字体覆盖。',
-                      'Auto-detect when empty; otherwise overrides the ZCode terminal font.'),
-                  placeholder: uiText(
-                      context,
-                      '留空自动继承，例如 MesloLGS NF, monospace',
-                      'Empty to inherit, e.g. MesloLGS NF, monospace'),
-                  monospace: true));
-              if (_remotePlatform == 'win32') {
-                terminalRows.add(_integratedShellRow(context, ink, remote));
-              }
-              terminalRows.add(_remoteToggle(
-                  context,
-                  ink,
-                  remote,
-                  'nativeSearchEnhancementsEnabled',
-                  uiText(context, '增强 Find 和 Grep', 'Enhanced Find and Grep'),
-                  snapshot.nativeSearchEnhancementsEnabled,
-                  officialDefault: true,
-                  description: uiText(
-                      context,
-                      '在新建会话或应用重启后恢复的会话中使用增强 Find 和 Grep。当前会话保持现有设置；Windows 的 Find 保持不变。',
-                      'Use enhanced Find and Grep in new sessions and sessions '
-                          'restored after an app restart. Active sessions keep '
-                          'their current setting; Find remains unchanged on '
-                          'Windows.')));
-
-              // Proxy card: three independently saved text settings.
-              Widget proxyText(String key, String title, String description,
-                      String placeholder) =>
-                  _RemoteTextSetting(
-                      controller: remote,
-                      settingKey: key,
-                      title: title,
-                      description: description,
-                      placeholder: placeholder,
-                      monospace: true);
-              proxyRows.add(proxyText(
-                  'httpProxy',
-                  uiText(context, 'HTTP 代理', 'HTTP proxy'),
-                  uiText(
-                      context,
-                      '模型、MCP、命令工具与应用渲染层的出口流量将经此代理，不读取系统环境变量。留空时这些流量直连，内置浏览器则跟随系统代理设置。修改后需重启应用生效。',
-                      'Route model, MCP, command-tool, and app renderer egress '
-                          'traffic through this proxy; system environment '
-                          'variables are not read. Leave blank and that '
-                          'traffic connects directly, while the embedded '
-                          'browser follows your system proxy settings. Restart '
-                          'the app to take effect.'),
-                  uiText(
-                      context,
-                      '留空则内置浏览器跟随系统代理，例如 http://127.0.0.1:7890',
-                      'Blank means the embedded browser follows the system '
-                          'proxy, e.g. http://127.0.0.1:7890')));
-              proxyRows.add(proxyText(
-                  'httpProxyNoProxy',
-                  uiText(context, '不使用代理的地址', 'No proxy'),
-                  uiText(
-                      context,
-                      '匹配这些主机的请求将直连，不经过 HTTP 代理。多个规则用英文逗号分隔。修改后需重启应用生效。',
-                      'Requests matching these hosts connect directly instead '
-                          'of using the HTTP proxy. Separate rules with '
-                          'commas. Restart the app to take effect.'),
-                  uiText(
-                      context,
-                      '例如 localhost,127.0.0.1,::1,.example.com,*.corp.com',
-                      'e.g. localhost,127.0.0.1,::1,.example.com,*.corp.com')));
-              proxyRows.add(proxyText(
-                  'httpProxyCaCertPath',
-                  uiText(context, '自定义证书', 'Custom certificate'),
-                  uiText(
-                      context,
-                      '可选。填写 PEM 根证书路径后，会作为 NODE_EXTRA_CA_CERTS 注入模型、MCP 与命令工具，并用于渲染层证书校验。修改后需重启应用生效。',
-                      'Optional. Set a PEM root certificate path to inject it '
-                          'as NODE_EXTRA_CA_CERTS for models, MCP, and command '
-                          'tools, and to trust it in renderer certificate '
-                          'verification. Restart the app to take effect.'),
-                  uiText(context, '例如 /Users/name/certs/root-ca.pem',
-                      'e.g. /Users/name/certs/root-ca.pem')));
-
-              // Behavior card (official general page bottom group; the old
-              // local “对话” section content lives here per official
-              // structure).
-              behaviorRows.add(_settingsRow(
-                  ink,
-                  uiText(context, '交互行为', 'Interaction behavior'),
-                  uiText(
-                      context,
-                      '在 ZCode 运行时将后续操作加入队列，或引导至下一轮工具调用后运行。',
-                      'While ZCode is running, add follow-up actions to the '
-                          'queue or guide them to run after the next tool call.'),
-                  remote.isSaving('zcodeInteractionBehavior')
-                      ? _remoteSpinner()
-                      : SizedBox(
-                          width: 220,
-                          child: DropdownButton<String>(
-                              value: const {
-                                'queue',
-                                'guide'
-                              }.contains(snapshot.zcodeInteractionBehavior)
-                                  ? snapshot.zcodeInteractionBehavior
-                                  : null,
-                              isExpanded: true,
-                              underline: const SizedBox(),
-                              items: [
-                                DropdownMenuItem(
-                                    value: 'queue',
-                                    child:
-                                        Text(uiText(context, '队列', 'Queue'))),
-                                DropdownMenuItem(
-                                    value: 'guide',
-                                    child:
-                                        Text(uiText(context, '引导', 'Guide'))),
-                              ],
-                              onChanged: snapshot.zcodeInteractionBehavior ==
-                                      null
-                                  ? null
-                                  : (value) {
-                                      if (value != null) {
-                                        unawaited(remote.update(
-                                            'zcodeInteractionBehavior', value));
-                                      }
-                                    }))));
-              behaviorRows.add(_remoteToggle(
-                  context,
-                  ink,
-                  remote,
-                  'askUserQuestionAutoResolutionEnabled',
-                  uiText(context, '提问自动继续', 'Automatically continue questions'),
-                  snapshot.askUserQuestionAutoResolutionEnabled,
-                  officialDefault: true,
-                  description: uiText(
-                      context,
-                      '开启后，Agent 提问 5 分钟未回答会自动继续；关闭后，当前和后续提问会一直等待你的回答。',
-                      'When enabled, Agent questions automatically continue '
-                          'after 5 minutes without an answer. When disabled, '
-                          'current and future questions wait for your response.')));
-              behaviorRows.add(_remoteToggle(
-                  context,
-                  ink,
-                  remote,
-                  'modelIoFullRetentionEnabled',
-                  uiText(context, '完整保留模型 I/O', 'Keep complete model I/O'),
-                  snapshot.modelIoFullRetentionEnabled,
-                  officialDefault: false,
-                  description: uiText(
-                      context,
-                      '保留完整的模型请求和响应，不自动压缩、限制大小或删除旧记录。',
-                      'Keep complete model requests and responses without '
-                          'compression, size limits, or automatic deletion.')));
-              behaviorRows.add(_remoteToggle(
-                  context,
-                  ink,
-                  remote,
-                  'messageStreamShowReasoning',
-                  uiText(context, '显示思考过程', 'Show reasoning'),
-                  snapshot.messageStreamShowReasoning,
-                  officialDefault: true,
-                  description: uiText(
-                      context,
-                      '在消息流中展示完整的模型思考内容；关闭时每轮仍展示第一次思考。',
-                      'Show full reasoning inside the message stream. When '
-                          'off, the first reasoning item in each turn remains '
-                          'visible.')));
-              behaviorRows.add(_remoteToggle(
-                  context,
-                  ink,
-                  remote,
-                  'messageStreamShowTodos',
-                  uiText(context, '显示待办', 'Show todos'),
-                  snapshot.messageStreamShowTodos,
-                  officialDefault: false,
-                  description: uiText(context, '在消息流中展示 Todo 工具卡片。',
-                      'Show Todo tool cards inside the message stream.')));
-              behaviorRows.add(_remoteToggle(
-                  context,
-                  ink,
-                  remote,
-                  'toolGroupingExploreEnabled',
-                  uiText(context, '分组探索工具', 'Group exploration tools'),
-                  snapshot.toolGroupingExploreEnabled,
-                  officialDefault: true,
-                  description: uiText(
-                      context,
-                      '将连续的读取和搜索工具聚合为 Explore 分组。',
-                      'Group consecutive reads and searches into an Explore '
-                          'section.')));
-              behaviorRows.add(_remoteToggle(
-                  context,
-                  ink,
-                  remote,
-                  'toolGroupingTerminalEnabled',
-                  uiText(context, '分组终端命令', 'Group terminal commands'),
-                  snapshot.toolGroupingTerminalEnabled,
-                  officialDefault: true,
-                  description: uiText(
-                      context,
-                      '将连续的非只读 Shell 命令聚合为 Terminal 分组。',
-                      'Group consecutive non-read-only shell commands into a '
-                          'Terminal section.')));
-              behaviorRows.add(_remoteToggle(
-                  context,
-                  ink,
-                  remote,
-                  'toolGroupingChangesEnabled',
-                  uiText(context, '分组文件更改', 'Group file changes'),
-                  snapshot.toolGroupingChangesEnabled,
-                  officialDefault: false,
-                  description: uiText(
-                      context,
-                      '将连续的 Write、Edit 和 ApplyPatch 调用聚合为 Changes 分组。',
-                      'Group consecutive Write, Edit, and ApplyPatch calls '
-                          'into a Changes section.')));
-
-              // Archive card (existing E1.2 write path).
-              final days = snapshot.taskAutoArchiveOlderThanDays;
-              final savingDays =
-                  remote.isSaving('taskAutoArchiveOlderThanDays');
-              const dayOptions = [3, 7, 14, 30];
-
-              return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SizedBox(height: 24),
-                    _settingsCard(ink, terminalRows),
-                    const SizedBox(height: 16),
-                    _settingsCard(ink, proxyRows),
-                    const SizedBox(height: 16),
-                    _settingsCard(ink, behaviorRows),
-                    const SizedBox(height: 16),
-                    _settingsCard(ink, [
-                      _remoteToggle(
-                          context,
-                          ink,
-                          remote,
-                          'taskAutoArchiveEnabled',
-                          uiText(context, '自动归档旧任务', 'Auto-archive old tasks'),
-                          snapshot.taskAutoArchiveEnabled,
-                          description: uiText(
-                              context,
-                              '定时扫描最近打开过的工作区，将已完成、无未读、未置顶且超过保留期的任务自动归档。',
-                              'Periodically scan recently opened workspaces '
-                                  'and automatically archive completed, '
-                                  'unread-free, unpinned tasks after the '
-                                  'retention window.')),
-                      _settingsRow(
-                          ink,
-                          uiText(context, '归档保留时长', 'Archive retention'),
-                          uiText(
-                              context,
-                              '任务最后更新时间早于该时长后，才会进入自动归档候选。',
-                              'A task becomes eligible for auto-archive only '
-                                  'after its last update is older than this '
-                                  'window.'),
-                          savingDays
-                              ? _remoteSpinner()
-                              : SizedBox(
-                                  width: 220,
-                                  child: DropdownButton<int>(
-                                      value: days != null &&
-                                              dayOptions.contains(days)
-                                          ? days
-                                          : null,
-                                      isExpanded: true,
-                                      underline: const SizedBox(),
-                                      items: [
-                                        for (final d in dayOptions)
-                                          DropdownMenuItem(
-                                              value: d,
-                                              child: Text(uiText(
-                                                  context,
-                                                  '$d 天后归档',
-                                                  'Archive after $d days')))
-                                      ],
-                                      onChanged: days == null ||
-                                              !remote.remoteOperationsAvailable
-                                          ? null
-                                          : (value) {
-                                              if (value != null) {
-                                                unawaited(remote.update(
-                                                    'taskAutoArchiveOlderThanDays',
-                                                    value));
-                                              }
-                                            }))),
-                    ]),
-                    _saveFailedColumn(
-                        context,
-                        remote.saveError('taskAutoArchiveOlderThanDays') !=
-                            null,
-                        savingDays,
-                        remote.remoteOperationsAvailable
-                            ? () => unawaited(remote.update(
-                                'taskAutoArchiveOlderThanDays',
-                                remote.lastAttempt(
-                                    'taskAutoArchiveOlderThanDays')))
-                            : null),
-                  ]);
-            }),
-    ];
-  }
-
-  Map<String, Object?>? _selectedShell(
-      List<Map<String, Object?>> options, String id) {
-    for (final shell in options) {
-      if (shell['id'] == id) return shell;
-    }
-    return null;
-  }
-
-  Widget _integratedShellRow(
-      BuildContext context, InkTokens ink, RemoteSettingsController remote) {
-    final snapshot = remote.snapshot;
-    final mode = snapshot.integratedTerminalShellMode;
-    final selectedId = snapshot.integratedTerminalShellId;
-    final saving = remote.isSaving('integratedTerminalShell');
-    final options = <Map<String, Object?>>[
-      // Official behavior: a stored shell that is not in the current system
-      // list is still shown, built from the snapshot fields.
-      if (mode == 'shell' &&
-          selectedId != null &&
-          !_terminalShells.any((shell) => shell['id'] == selectedId))
-        {
-          'id': selectedId,
-          'label': snapshot.integratedTerminalShellLabel ?? selectedId,
-          'dialect': snapshot.integratedTerminalShellDialect ?? '',
-          'path': snapshot.integratedTerminalShellPath ?? '',
-        },
-      ..._terminalShells,
-    ];
-    return _settingsRow(
-        ink,
-        uiText(context, '集成终端Shell', 'Integrated terminal shell'),
-        uiText(
-            context,
-            '仅新会话生效。Windows 下 Bash 工具用此 shell；自动优先 Git Bash，找不到回退 cmd.exe。',
-            'Applies to new sessions only. Bash tools prefer the selected '
-                'shell on Windows; auto prefers Git Bash and falls back to cmd.'),
-        saving
-            ? _remoteSpinner()
-            : SizedBox(
-                width: 220,
-                child: DropdownButton<String>(
-                    value: mode == 'shell' &&
-                            selectedId != null &&
-                            options.any((shell) => shell['id'] == selectedId)
-                        ? selectedId
-                        : (mode == 'shell' ? null : 'auto'),
-                    isExpanded: true,
-                    underline: const SizedBox(),
-                    items: [
-                      DropdownMenuItem(
-                          value: 'auto',
-                          child: Text(uiText(context, '自动选择', 'Auto'))),
-                      for (final shell in options)
-                        DropdownMenuItem(
-                            value: shell['id'] as String?,
-                            child: Text((shell['label'] as String?) ??
-                                (shell['id'] as String? ?? ''))),
-                    ],
-                    onChanged: remote.remoteOperationsAvailable
-                        ? (id) {
-                            if (id == null) return;
-                            if (id == 'auto') {
-                              unawaited(remote.update(
-                                  'integratedTerminalShell', {'mode': 'auto'}));
-                              return;
-                            }
-                            final shell = _selectedShell(options, id);
-                            if (shell == null) return;
-                            unawaited(remote.update('integratedTerminalShell', {
-                              'mode': 'shell',
-                              'dialect': shell['dialect'],
-                              'id': shell['id'],
-                              'label': shell['label'],
-                              'path': shell['path'],
-                            }));
-                          }
-                        : null)));
   }
 
   List<Widget> _mcpContent(BuildContext context, InkTokens ink) {
@@ -5012,184 +4213,6 @@ class FamilyConnectionOption {
 
 /// Official general-page text setting: title + description with a save
 /// button on the title line and a full-width monospace input below. The
-/// button enables only when the trimmed input differs from the remote
-/// snapshot; a failed save keeps the user text for retry.
-class _RemoteTextSetting extends StatefulWidget {
-  const _RemoteTextSetting({
-    required this.controller,
-    required this.settingKey,
-    required this.title,
-    this.description,
-    this.placeholder,
-    this.monospace = false,
-  });
-
-  final RemoteSettingsController controller;
-  final String settingKey;
-  final String title;
-  final String? description;
-  final String? placeholder;
-  final bool monospace;
-
-  @override
-  State<_RemoteTextSetting> createState() => _RemoteTextSettingState();
-}
-
-class _RemoteTextSettingState extends State<_RemoteTextSetting> {
-  final TextEditingController _text = TextEditingController();
-  String? _lastSynced;
-
-  @override
-  void initState() {
-    super.initState();
-    _syncFromSnapshot();
-    widget.controller.addListener(_onRemoteChanged);
-  }
-
-  @override
-  void didUpdateWidget(covariant _RemoteTextSetting oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.controller, widget.controller)) {
-      oldWidget.controller.removeListener(_onRemoteChanged);
-      widget.controller.addListener(_onRemoteChanged);
-      _lastSynced = null;
-      _syncFromSnapshot();
-    }
-  }
-
-  String _snapshotText() {
-    final value = widget.controller.snapshot.values[widget.settingKey];
-    if (value == null) return '';
-    return value is String ? value : '$value';
-  }
-
-  // A pending user edit (text differs from the last synced snapshot) is
-  // never overwritten by a refresh; the official page re-syncs
-  // unconditionally, but that would erase typing mid-save.
-  void _syncFromSnapshot() {
-    final current = _snapshotText();
-    if (_lastSynced == current) return;
-    final dirty = _lastSynced != null && _text.text.trim() != _lastSynced;
-    _lastSynced = current;
-    if (!dirty && _text.text != current) {
-      _text.text = current;
-    }
-  }
-
-  void _onRemoteChanged() {
-    if (!mounted) return;
-    setState(_syncFromSnapshot);
-  }
-
-  bool get _dirty => _text.text.trim() != _lastSynced;
-
-  Future<void> _save() async {
-    if (!_dirty) return;
-    await widget.controller.update(widget.settingKey, _text.text.trim());
-    // Official behavior: after a successful save the input shows the stored
-    // (trimmed) value. A failed save keeps the user text for retry.
-    if (!mounted) return;
-    if (widget.controller.saveError(widget.settingKey) == null) {
-      final stored = _snapshotText();
-      _text.text = stored;
-      _lastSynced = stored;
-    }
-  }
-
-  @override
-  void dispose() {
-    widget.controller.removeListener(_onRemoteChanged);
-    _text.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final saving = widget.controller.isSaving(widget.settingKey);
-    final failed = widget.controller.saveError(widget.settingKey) != null;
-    final saveButton = OutlinedButton(
-        onPressed:
-            _dirty && !saving && widget.controller.remoteOperationsAvailable
-                ? () => unawaited(_save())
-                : null,
-        child: Text(
-            saving
-                ? uiText(context, '保存中…', 'Saving…')
-                : uiText(context, '保存', 'Save'),
-            style: const TextStyle(fontSize: 13)));
-    return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          LayoutBuilder(builder: (context, constraints) {
-            final label =
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(widget.title),
-              if (widget.description != null) ...[
-                const SizedBox(height: 4),
-                Text(widget.description!,
-                    style: TextStyle(
-                        fontSize: 12.5,
-                        color:
-                            ZInk.of(Theme.of(context).colorScheme).subtlest)),
-              ],
-            ]);
-            if (constraints.maxWidth < 420) {
-              return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [label, const SizedBox(height: 8), saveButton]);
-            }
-            return Row(children: [
-              Expanded(child: label),
-              const SizedBox(width: 12),
-              saveButton,
-            ]);
-          }),
-          const SizedBox(height: 8),
-          TextField(
-              controller: _text,
-              enabled: widget.controller.remoteOperationsAvailable,
-              onSubmitted: (_) => widget.controller.remoteOperationsAvailable
-                  ? unawaited(_save())
-                  : null,
-              style: widget.monospace
-                  ? const TextStyle(fontFamily: 'monospace', fontSize: 13)
-                  : null,
-              decoration: InputDecoration(
-                  isDense: true,
-                  hintText: widget.placeholder,
-                  border: const OutlineInputBorder())),
-          _saveFailedColumn(
-              context,
-              failed,
-              saving,
-              widget.controller.remoteOperationsAvailable
-                  ? () => unawaited(widget.controller.update(
-                      widget.settingKey,
-                      (widget.controller.lastAttempt(widget.settingKey)
-                              as Map<String, Object?>?)?[widget.settingKey] ??
-                          _text.text.trim()))
-                  : null),
-        ]));
-  }
-}
-
-Widget _saveFailedColumn(
-    BuildContext context, bool failed, bool saving, VoidCallback? onRetry) {
-  if (!failed) return const SizedBox.shrink();
-  return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Row(children: [
-        Text(
-            uiText(context, '保存失败，已保留原设置。',
-                'Save failed. The previous value is kept.'),
-            style: TextStyle(color: Theme.of(context).colorScheme.error)),
-        const SizedBox(width: 12),
-        OutlinedButton(
-            onPressed: saving ? null : onRetry,
-            child: Text(uiText(context, '重试', 'Retry'))),
-      ]));
-}
-
 /// Official dashed empty-state note card (memory details / hooks empty
 /// states): centred subtle text inside a dashed rounded border.
 class _DashedNoteCard extends StatelessWidget {

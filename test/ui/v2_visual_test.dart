@@ -150,8 +150,16 @@ void main() {
           await tester.pumpWidget(app(shell()));
           await tester.pumpAndSettle();
           await capture('${mode.name}-${width.toInt()}');
-          await tester.tap(find.byTooltip('工作面板').last);
+          // Compact headers move the panel toggle into the task menu.
+          if (find.byTooltip('工作面板').evaluate().isNotEmpty) {
+            await tester.tap(find.byTooltip('工作面板').last);
+          } else {
+            await tester.tap(find.byTooltip('更多').first);
+            await tester.pumpAndSettle();
+            await tester.tap(find.byKey(const ValueKey('task-menu-panel')));
+          }
           await tester.pumpAndSettle();
+          await capture('${mode.name}-${width.toInt()}-panel');
           await capture('${mode.name}-${width.toInt()}-panel');
           await tester.tap(find.byTooltip('关闭面板').last);
           await tester.pumpAndSettle();

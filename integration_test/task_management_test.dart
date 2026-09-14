@@ -217,8 +217,10 @@ void main() {
     await tester.tap(find.text('删除任务').last);
     await tester.pumpAndSettle();
     expect(server.map((t) => t['taskId']), ['control']);
+    // Non-list channel traffic also includes parameterless reads (added by
+    // the conversation split); only scoped writes carry a taskId argument.
     final writes = bridge.channels.calls
-        .where((c) => !c.method.startsWith('list'))
+        .where((c) => !c.method.startsWith('list') && c.args.isNotEmpty)
         .toList();
     expect(
         writes.every((c) =>

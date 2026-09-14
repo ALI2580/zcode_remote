@@ -242,4 +242,38 @@ void main() {
     await tester.pumpAndSettle();
     expect(closed, isTrue);
   });
+
+  testWidgets('expand toggle reports state changes (U-E3)', (tester) async {
+    final bridge = _Bridge();
+    bridge.response = twoFileResponse;
+    final controller = _controller(bridge);
+    addTearDown(controller.dispose);
+    var expanded = false;
+
+    await tester.pumpWidget(MaterialApp(
+      locale: const Locale('zh'),
+      supportedLocales: const [Locale('zh'), Locale('en')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      theme: ZInkTheme.light(),
+      home: Scaffold(
+        body: StatefulBuilder(builder: (context, setState) {
+          return FileChangesReviewPanel(
+            controller: controller,
+            initialPath: 'lib/a.dart',
+            expanded: expanded,
+            onToggleExpanded: (value) => setState(() => expanded = value),
+          );
+        }),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('展开'));
+    await tester.pumpAndSettle();
+    expect(expanded, isTrue);
+
+    await tester.tap(find.byTooltip('收起'));
+    await tester.pumpAndSettle();
+    expect(expanded, isFalse);
+  });
 }

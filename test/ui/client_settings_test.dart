@@ -3173,8 +3173,8 @@ void main() {
     await tester.pumpAndSettle();
     // U24: the 引导 entry opens the official multi-step wizard, not the
     // plain import dialog. The welcome page offers start / migration guide.
-    // (Dialog header and welcome headline share the label.)
-    expect(find.text('欢迎使用 ZCode'), findsNWidgets(2));
+    // Official L$t welcome has no dialog header; the headline appears once.
+    expect(find.text('欢迎使用 ZCode'), findsOneWidget);
     expect(find.text('开始使用 ZCode'), findsOneWidget);
     expect(find.text('数据迁移向导'), findsOneWidget);
     expect(detectCalls, 1);

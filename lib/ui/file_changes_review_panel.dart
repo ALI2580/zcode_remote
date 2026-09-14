@@ -32,12 +32,16 @@ class FileChangesReviewPanel extends StatefulWidget {
   final FileChangesReviewController controller;
   final String initialPath;
   final VoidCallback? onLastTabClosed;
+  final ValueChanged<bool>? onToggleExpanded;
+  final bool expanded;
 
   const FileChangesReviewPanel({
     super.key,
     required this.controller,
     required this.initialPath,
     this.onLastTabClosed,
+    this.onToggleExpanded,
+    this.expanded = false,
   });
 
   @override
@@ -113,19 +117,41 @@ class _FileChangesReviewPanelState extends State<FileChangesReviewPanel> {
                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                 decoration: BoxDecoration(
                     border: Border(bottom: BorderSide(color: ink.border))),
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  reverse: true,
-                  child: Row(children: [
-                    for (final path in _openPaths)
-                      _ReviewTab(
-                        label: _basename(path),
-                        selected: _active == path,
-                        onTap: () => setState(() => _select(path)),
-                        onClose: () => setState(() => _closeTab(path)),
+                child: Row(children: [
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      reverse: true,
+                      child: Row(children: [
+                        for (final path in _openPaths)
+                          _ReviewTab(
+                            label: _basename(path),
+                            selected: _active == path,
+                            onTap: () => setState(() => _select(path)),
+                            onClose: () => setState(() => _closeTab(path)),
+                          ),
+                      ]),
+                    ),
+                  ),
+                  if (widget.onToggleExpanded != null)
+                    Tooltip(
+                      message: widget.expanded
+                          ? uiText(context, '收起', 'Collapse')
+                          : uiText(context, '展开', 'Expand'),
+                      child: IconButton(
+                        visualDensity: VisualDensity.compact,
+                        icon: Icon(
+                          widget.expanded
+                              ? Icons.fullscreen_exit
+                              : Icons.fullscreen,
+                          size: 18,
+                          color: ink.subtlest,
+                        ),
+                        onPressed: () =>
+                            widget.onToggleExpanded!(!widget.expanded),
                       ),
-                  ]),
-                ),
+                    ),
+                ]),
               ),
               Expanded(child: _body(context, ink, result, item)),
             ],

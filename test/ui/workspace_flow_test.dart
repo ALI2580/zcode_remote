@@ -15,6 +15,32 @@ import 'package:zcode_remote/ui/navigation.dart';
 import 'package:zcode_remote/ui/workspace_shell.dart';
 import 'fake_workspace.dart';
 
+/// Compact headers move the panel and terminal toggles into the task menu;
+/// wide headers keep the icon buttons. Either path must land the same state.
+Future<void> _openPanelToggle(WidgetTester tester) async {
+  final header = find.byTooltip('工作面板');
+  if (header.evaluate().isNotEmpty) {
+    await tester.tap(header.last);
+  } else {
+    await tester.tap(find.byTooltip('更多').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('task-menu-panel')));
+  }
+  await tester.pumpAndSettle();
+}
+
+Future<void> _toggleTerminal(WidgetTester tester) async {
+  final header = find.byTooltip('切换终端');
+  if (header.evaluate().isNotEmpty) {
+    await tester.tap(header.last);
+  } else {
+    await tester.tap(find.byTooltip('更多').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('task-menu-terminal')));
+  }
+  await tester.pump();
+}
+
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
@@ -54,7 +80,7 @@ void main() {
     await tester.pumpAndSettle();
     final shellState = tester.state(find.byType(WorkspaceShell));
     await tester.enterText(find.byType(TextField), 'A 独立草稿');
-    await tester.tap(find.byTooltip('工作面板').last);
+    await _openPanelToggle(tester);
     await tester.pumpAndSettle();
     await tester.tap(find.text('辅助对话'));
     await tester.pumpAndSettle();
@@ -137,7 +163,7 @@ void main() {
             sessionId: 'task',
             title: '任务 A'));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('工作面板').last);
+    await _openPanelToggle(tester);
     await tester.pumpAndSettle();
     expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 1);
     expect(find.text('任务已就绪'), findsOneWidget);
@@ -146,7 +172,7 @@ void main() {
     expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 0);
     // The official remote hosts terminals in a bottom drawer toggled from the
     // top bar; switching side panel tabs must not close or move it.
-    await tester.tap(find.byTooltip('切换终端').last);
+    await _toggleTerminal(tester);
     await tester.pump();
     expect(find.text('终端'), findsOneWidget);
     expect(tester.widget<IndexedStack>(find.byType(IndexedStack)).index, 0);
@@ -268,7 +294,7 @@ void main() {
             title: '任务 A'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).first, 'A 主草稿');
-    await tester.tap(find.byTooltip('工作面板').last);
+    await _openPanelToggle(tester);
     await tester.pumpAndSettle();
     await tester.tap(find.text('辅助对话'));
     await tester.pumpAndSettle();

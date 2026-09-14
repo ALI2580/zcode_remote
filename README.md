@@ -24,7 +24,22 @@ ZcodeRemote 让你在 Android 手机、折叠屏和平板上远程控制运行 Z
 - **非官方项目**：与 Z.ai / ZCode 官方无隶属关系；官方 Web 端仅作为视觉与协议参考。
 - **多设备优先**：同时管理多台桌面，连接在页面切换与后台往返间保持存活。
 
-## 功能总览（当前版本 0.1.0+11）
+## 界面预览
+
+<div align="center">
+  <img src="docs/screenshots/settings-center.png" alt="设置中心" width="49%">
+  <img src="docs/screenshots/appearance.png" alt="外观设置" width="49%">
+  <p><sub>设置中心 · 官方 max-w-5xl 居中外壳，模型 / 技能 / MCP / 插件 / 命令 / 钩子一站管理</sub></p>
+  <p><sub>外观 · 界面主题 + 浅深代码双主题实时预览</sub></p>
+  <img src="docs/screenshots/devices.png" alt="多设备管理" width="49%">
+  <img src="docs/screenshots/voice-models.png" alt="语音模型管理" width="49%">
+  <p><sub>设备目录 · 多桌面连接状态与最近使用排序 ｜ 语音模型 · 离线 ASR 下载 / 解压 / 校验状态机</sub></p>
+  <img src="docs/screenshots/onboarding.png" alt="引导向导" width="49%">
+  <img src="docs/screenshots/notifications.png" alt="通知与上岛" width="49%">
+  <p><sub>引导 · 官方风格多步数据迁移向导 ｜ 通知 · ColorOS 16 / Android 16 Live Updates 上岛</sub></p>
+</div>
+
+## 功能总览（当前版本 0.1.0+12）
 
 | 领域 | 能力 |
 |---|---|

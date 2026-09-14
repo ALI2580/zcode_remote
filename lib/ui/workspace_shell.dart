@@ -29,6 +29,7 @@ import 'shell/shell_layout.dart';
 import 'shell/task_navigation.dart';
 import 'theme.dart';
 import 'plugin_marketplace.dart';
+import 'mobile/mobile_layout.dart';
 import 'terminal_panel.dart';
 import 'usage/usage_page.dart';
 import 'upgrade_page.dart';
@@ -54,6 +55,12 @@ BoxConstraints _deviceMenuConstraints(BuildContext context) {
       maxWidth: maxWidth,
       maxHeight: math.min(480.0 * textScale, availableHeight));
 }
+
+/// P4-shell deterministic counters (references/optimization/
+/// performance-todolist.md): bounded-retention evidence for the per-source
+/// Offstage chat page cache.
+int workspaceShellChatPagesBuilt = 0;
+int workspaceShellRetainedPagesMax = 0;
 
 class WorkspaceShell extends StatefulWidget {
   const WorkspaceShell(
@@ -110,6 +117,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   set _lastPanel(_WorkPanel value) => _view.panelTab = value.name;
   LocalHistoryEntry? _panelHistory;
   bool _terminalOpen = false;
+  bool _terminalMaximized = false;
+  bool _panelExpanded = false;
   LocalHistoryEntry? _terminalHistory;
   FileChangesReviewController? _reviewController;
   String? _reviewKey;
@@ -572,6 +581,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
 
   void _closePanel() {
     _view.panelOpen = false;
+    _panelExpanded = false;
     final history = _panelHistory;
     _panelHistory = null;
     history?.remove();
@@ -829,6 +839,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
             context, widget.sessions, widget.preferences,
             remoteMonitor: widget.monitor, section: 'modelProvider'));
     _chatPages[sourceKey] = page;
+    workspaceShellChatPagesBuilt++;
+    if (_chatPages.length > workspaceShellRetainedPagesMax) {
+      workspaceShellRetainedPagesMax = _chatPages.length;
+    }
     final keys = _chatPages.keys.toList();
     return Stack(fit: StackFit.expand, children: [
       for (final key in keys)
@@ -874,6 +888,12 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                               replace: true),
                       child: Text(uiText(context, '重新连接', 'Reconnect')))
                 ])));
+    // Compact phones collapse the header to navigation + more; the
+    // low-frequency controls move into the labelled task menu with their
+    // active state, instead of a dense icon row.
+    final compact = MobileLayout.isCompact(
+        MediaQuery.sizeOf(context).width - MediaQuery.paddingOf(context).horizontal,
+        MediaQuery.textScalerOf(context));
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyK, control: true): () =>
@@ -912,9 +932,12 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       child: PluginMarketplace(
                           catalog: _pluginCatalog!, onUse: _usePlugin))),
           ]),
-          onMore: _pluginOpen ? null : () => _showTaskMenu(context),
+          onMore: _pluginOpen
+              ? null
+              : () => _showTaskMenu(context,
+                  compact: compact, usable: usable),
           actions: [
-            if (usable && !_pluginOpen)
+            if (usable && !_pluginOpen && !compact)
               GitBranchChip(
                 session: widget.monitor.bridge,
                 scope: widget.workspace.scope,
@@ -924,14 +947,15 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                   icon: 'x',
                   label: uiText(context, '返回任务', 'Back to task'),
                   onPressed: _closePluginStore),
-            if (usable && !_pluginOpen)
+            if (usable && !_pluginOpen && !compact)
               ShellIconButton(
                   icon: 'square-terminal',
                   label: uiText(context, '切换终端', 'Toggle terminal'),
                   selected: _terminalOpen,
                   onPressed: _toggleTerminal),
-            ShellIconButton(
-                icon: 'panel-right',
+            if (!compact)
+              ShellIconButton(
+                  icon: 'panel-right',
                 label: uiText(context, '工作面板', 'Work panel'),
                 selected: _panel != null,
                 onPressed: usable && !_pluginOpen
@@ -945,10 +969,12 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                     : null)
           ],
           panelOpen: _panel != null,
+          panelExpanded: _panel == _WorkPanel.review && _panelExpanded,
           panel: usable ? _workPanel(context, ink) : null,
           onClosePanel: _closePanel,
           bottomPanel: usable ? _terminalDrawer(context) : null,
           bottomPanelOpen: _terminalOpen,
+          bottomPanelFullHeight: _terminalOpen && _terminalMaximized,
           onCloseBottomPanel: _closeTerminalDrawer,
         ),
       ),
@@ -1239,7 +1265,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                             style: const TextStyle(fontSize: 14)))
                   ]))));
 
-  Future<void> _showTaskMenu(BuildContext context) async {
+  Future<void> _showTaskMenu(BuildContext context,
+      {required bool compact, required bool usable}) async {
     final task = _task;
     final action = await showModalBottomSheet<String>(
         context: context,
@@ -1256,6 +1283,22 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
               ListTile(
                   title: Text(uiText(context, '辅助对话', 'Side chat')),
                   onTap: () => Navigator.pop(context, 'side')),
+              if (compact && usable) ...[
+                ListTile(
+                    key: const ValueKey('task-menu-terminal'),
+                    title: Text(uiText(context, '切换终端', 'Toggle terminal') +
+                        (_terminalOpen
+                            ? uiText(context, '（已打开）', ' (open)')
+                            : uiText(context, '（已关闭）', ' (closed)'))),
+                    onTap: () => Navigator.pop(context, 'terminal')),
+                ListTile(
+                    key: const ValueKey('task-menu-panel'),
+                    title: Text(uiText(context, '工作面板', 'Work panel') +
+                        (_panel != null
+                            ? uiText(context, '（打开）', ' (open)')
+                            : uiText(context, '（关闭）', ' (closed)'))),
+                    onTap: () => Navigator.pop(context, 'panel')),
+              ],
             ])));
     if (!mounted) return;
     if (action == 'rename' && task != null) {
@@ -1269,6 +1312,14 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       _toast(uiText(context, '项目路径已复制', 'Project path copied'));
     }
     if (action == 'side') _showPanel(_WorkPanel.sideChat);
+    if (action == 'terminal') _toggleTerminal();
+    if (action == 'panel') {
+      if (_panel != null) {
+        _closePanel();
+      } else {
+        _showPanel(_lastPanel);
+      }
+    }
   }
 
   Widget _workPanel(BuildContext context, InkTokens ink) {
@@ -1279,6 +1330,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
           controller: controller,
           initialPath: _reviewInitialPath,
           onLastTabClosed: _closePanel,
+          expanded: _panelExpanded,
+          onToggleExpanded: (value) => setState(() => _panelExpanded = value),
         );
       }
       // Restored from persisted state without row context: summary instead.
@@ -1401,6 +1454,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
             widget.workspace.title,
         visible: _terminalOpen,
         workspace: _terminalWorkspace(),
+        maximized: _terminalMaximized,
+        onToggleMaximize: () =>
+            setState(() => _terminalMaximized = !_terminalMaximized),
         onCloseDrawer: _closeTerminalDrawer,
       );
 }

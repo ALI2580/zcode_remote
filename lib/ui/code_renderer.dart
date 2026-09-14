@@ -414,6 +414,53 @@ class CodeTokenSpan {
   final int end;
 }
 
+/// P3-code deterministic counter (references/optimization/
+/// performance-todolist.md): one increment per full source format pass.
+/// Cache hits do not count, so the counter measures real parses.
+int codeFormatCalls = 0;
+
+/// Bounded format cache for [formatCode]: content-addressed by
+/// (theme identity, fontSize, source value), at most 8 entries. Spans are
+/// immutable, so a hit is safe to share across widgets and frames; a key
+/// miss recomputes without any invalidation timing.
+class _FormatCacheKey {
+  const _FormatCacheKey(this.theme, this.fontSize, this.source);
+  final CodeThemeDefinition theme;
+  final double fontSize;
+  final String source;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _FormatCacheKey &&
+      identical(theme, other.theme) &&
+      fontSize == other.fontSize &&
+      source == other.source;
+
+  @override
+  int get hashCode => Object.hash(identityHashCode(theme), fontSize, source);
+}
+
+final Map<_FormatCacheKey, TextSpan> _formatLru =
+    <_FormatCacheKey, TextSpan>{};
+
+/// Cached entry point used by renderers; [CodeSyntaxHighlighter.format]
+/// stays the uncached primitive.
+TextSpan formatCode(
+    CodeThemeDefinition theme, double fontSize, String source) {
+  final key = _FormatCacheKey(theme, fontSize, source);
+  final hit = _formatLru.remove(key);
+  if (hit != null) {
+    _formatLru[key] = hit; // refresh LRU position
+    return hit;
+  }
+  final span = CodeSyntaxHighlighter(theme, fontSize).format(source);
+  _formatLru[key] = span;
+  while (_formatLru.length > 8) {
+    _formatLru.remove(_formatLru.keys.first);
+  }
+  return span;
+}
+
 /// A small deterministic TextMate-like projection using the official token
 /// colors. It intentionally keeps the source untouched and only paints spans.
 class CodeSyntaxHighlighter implements SyntaxHighlighter {
@@ -427,6 +474,7 @@ class CodeSyntaxHighlighter implements SyntaxHighlighter {
 
   @override
   TextSpan format(String source) {
+    codeFormatCalls++;
     final base = TextStyle(
       fontFamily: 'monospace',
       fontSize: fontSize,
@@ -452,6 +500,10 @@ class CodeSyntaxHighlighter implements SyntaxHighlighter {
     return TextSpan(style: base, children: children);
   }
 
+  static final _digitPrefix = RegExp(r'^\d');
+  static final _keyword = RegExp(
+      r'^(?:void|class|extends|implements|import|export|from|return|if|else|for|while|switch|case|break|continue|new|final|const|var|let|function|async|await|try|catch|throw|with|as|in|is|def|fn|pub|struct|enum|interface|type|select|where|insert|update|delete)$');
+
   String _scopeFor(String value, String source, RegExpMatch match) {
     if (value.startsWith('//') ||
         value.startsWith('/*') ||
@@ -459,13 +511,12 @@ class CodeSyntaxHighlighter implements SyntaxHighlighter {
       return 'comment';
     }
     if (value.startsWith('"') || value.startsWith("'")) return 'string';
-    if (RegExp(r'^\d').hasMatch(value)) return 'constant.numeric';
+    if (_digitPrefix.hasMatch(value)) return 'constant.numeric';
     if (RegExp(r'^[A-Za-z_]').hasMatch(value)) {
       if (const {'true', 'false', 'null'}.contains(value)) {
         return 'constant';
       }
-      if (RegExp(r'^(?:void|class|extends|implements|import|export|from|return|if|else|for|while|switch|case|break|continue|new|final|const|var|let|function|async|await|try|catch|throw|with|as|in|is|def|fn|pub|struct|enum|interface|type|select|where|insert|update|delete)$')
-          .hasMatch(value)) {
+      if (_keyword.hasMatch(value)) {
         return 'keyword';
       }
       return 'entity.name.function';
@@ -549,29 +600,34 @@ class CodeViewer extends StatelessWidget {
   }
 
   Widget _body(BuildContext context) {
-    final highlighter = CodeSyntaxHighlighter(theme, fontSize);
     final base = TextStyle(
       fontFamily: 'monospace',
       fontSize: fontSize,
       height: 1.5,
       color: theme.foreground,
     );
+    // P3-code: one cached format per (theme, fontSize, source); the wrap
+    // branch reuses the same span for the line-number painter instead of
+    // parsing the source a second time.
+    final span = formatCode(theme, fontSize, source);
     final code = selectionEnabled
         ? SelectableText.rich(
-            highlighter.format(source),
+            span,
             maxLines: null,
             textAlign: TextAlign.left,
           )
         : Text.rich(
-            highlighter.format(source),
+            span,
             softWrap: true,
             textAlign: TextAlign.left,
           );
     final lineCount = source.split('\n').length;
-    final numberText = List<String>.generate(
-      lineCount,
-      (index) => '${index + 1}${index + 1 == lineCount ? '' : '\n'}',
-    ).join();
+    final numberText = showLineNumbers
+        ? List<String>.generate(
+            lineCount,
+            (index) => '${index + 1}${index + 1 == lineCount ? '' : '\n'}',
+          ).join()
+        : '';
     final numbers = showLineNumbers
         ? SelectionContainer.disabled(
             child: SizedBox(
@@ -614,7 +670,7 @@ class CodeViewer extends StatelessWidget {
                   child: CustomPaint(
                     painter: _LineNumberPainter(
                       source: source,
-                      span: highlighter.format(source),
+                      span: span,
                       style: base,
                       width: contentWidth,
                       color: theme.lineNumberForeground,
@@ -848,15 +904,16 @@ class CodeDiffViewer extends StatelessWidget {
   double _gutterWidth(List<({int? oldLine, int? newLine})?> pairs) {
     var maxDigits = 1;
     for (final pair in pairs) {
-      for (final value in [pair?.oldLine, pair?.newLine]) {
-        if (value != null) {
-          maxDigits = maxDigits > value.toString().length
-              ? maxDigits
-              : value.toString().length;
-        }
+      // Single gutter column: removed lines show the old number, everything
+      // else the new one. Sizing follows the widest of those values.
+      final value = pair?.newLine ?? pair?.oldLine;
+      if (value != null) {
+        maxDigits = maxDigits > value.toString().length
+            ? maxDigits
+            : value.toString().length;
       }
     }
-    return (maxDigits * fontSize * .62 * 2).clamp(76, 112).toDouble();
+    return (maxDigits * fontSize * .62).clamp(28, 56).toDouble();
   }
 }
 
@@ -872,7 +929,10 @@ class _DiffRenderDocument {
   final List<({int? oldLine, int? newLine})?> numberPairs;
 
   String get numberText => numberPairs
-      .map((pair) => '${pair?.oldLine ?? ''}    ${pair?.newLine ?? ''}')
+      // Unified-diff single gutter: a removed line carries its old number,
+      // every other line the new one. Two stacked columns misalign once the
+      // source wraps, so the gutter stays one column wide.
+      .map((pair) => '${pair?.newLine ?? pair?.oldLine ?? ''}')
       .join('\n');
 }
 
@@ -916,13 +976,7 @@ class _DiffLineNumberPainter extends CustomPainter {
       if (metric == null) continue;
       _paintNumber(
         canvas,
-        '${pair.oldLine ?? ''}',
-        size.width / 2,
-        metric.baseline,
-      );
-      _paintNumber(
-        canvas,
-        '${pair.newLine ?? ''}',
+        '${pair.newLine ?? pair.oldLine ?? ''}',
         size.width,
         metric.baseline,
       );

@@ -10,6 +10,7 @@ import '../official_icons.dart';
 import '../theme.dart';
 import 'composer_mode_metadata.dart';
 import 'composer_popover.dart';
+import '../mobile/option_sheet.dart';
 
 Future<String?> showComposerModeMenu(
     BuildContext anchor, ComposerController controller) {
@@ -42,6 +43,208 @@ Future<String?> showComposerModelMenu(
       ),
     ),
   );
+}
+
+/// Compact-shell bottom sheet for the collaboration mode. Shares the same
+/// controller and select callback as the anchored popover; only the shell
+/// differs.
+Future<String?> showComposerModeSheet(
+    BuildContext context, ComposerController controller) {
+  return showMobileOptionSheet<String>(context: context, title: uiText(
+      context, '协作模式', 'Collaboration mode'), optionsBuilder: (sheetContext) {
+    final options = controller.options.modes;
+    final selected = controller.config['mode'] as String?;
+    final enabled = controller.canConfigureMode;
+    final family = familyForModeValues([for (final o in options) o.value]);
+    final provider = controller.config['provider'] as String?;
+    return [
+      for (final option in options)
+        MobileSheetOption<String>(
+          value: option.value,
+          label: modeLabel(sheetContext, option.value, option.name, provider,
+              family),
+          subtitle:
+              modeDescription(sheetContext, option, provider, family),
+          icon: modeIconForValue(option.value),
+          selected: option.value == selected,
+          enabled: enabled,
+        )
+    ];
+  });
+}
+
+/// Compact-shell bottom sheet for model selection. The metadata projection
+/// comes from the same [ModelProvidersCatalog] flow as the anchored menu
+/// ([_ModelMenuData]), so there is no second business state. Picking the
+/// sentinel value [composerManageModelsSentinel] means "open manage page".
+Future<String?> showComposerModelSheet(
+    BuildContext context, ComposerController controller,
+    {VoidCallback? onManageModels}) {
+  return showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => _ModelMenuData(
+            controller: controller,
+            builder: (innerContext, projection, metadataError,
+                    metadataLoading, refresh) =>
+                MobileOptionSheet<String>(
+                    title: uiText(context, '选择模型', 'Select model'),
+                    searchable: true,
+                    searchHint: uiText(context, '搜索模型', 'Search models'),
+                    optionsBuilder: (rowsContext) => _modelSheetRows(
+                        rowsContext,
+                        controller,
+                        projection,
+                        metadataError,
+                        metadataLoading,
+                        onManageModels)),
+          ));
+}
+
+const String composerManageModelsSentinel = '::manage';
+
+List<MobileSheetOption<String>> _modelSheetRows(
+    BuildContext context,
+    ComposerController controller,
+    ComposerModelCatalogProjection? projection,
+    Object? metadataError,
+    bool metadataLoading,
+    VoidCallback? onManageModels) {
+  final selected = controller.options.model(controller.config)?.value;
+  final enabled = controller.canConfigureModel;
+  final rows = <MobileSheetOption<String>>[];
+  for (final group in controller.options.modelGroupsFor(projection)) {
+    if (!group.directItems) {
+      rows.add(MobileSheetOption<String>(
+          value: 'header:${group.id}',
+          label: group.badgeLabel?.trim().isNotEmpty == true
+              ? '${group.label} · ${group.badgeLabel}'
+              : group.label,
+          sectionHeader: true));
+    }
+    for (final item in group.items) {
+      rows.add(MobileSheetOption<String>(
+        value: item.value,
+        label: item.name,
+        subtitle: group.directItems ? null : group.label,
+        selected: item.value == selected,
+        enabled: enabled,
+        trailingIcon: group.visionModelValues.contains(item.value)
+            ? 'file-image'
+            : null,
+      ));
+    }
+  }
+  if (metadataError != null) {
+    rows.add(MobileSheetOption<String>(
+        value: 'header:retry',
+        label: metadataLoading
+            ? uiText(context, '模型信息加载中', 'Loading model metadata')
+            : uiText(context, '重试模型信息', 'Retry model metadata'),
+        sectionHeader: true));
+  }
+  if (onManageModels != null) {
+    rows.add(MobileSheetOption<String>(
+        value: '::manage',
+        label: uiText(context, '管理模型', 'Manage models'),
+        enabled: true));
+  }
+  return rows;
+}
+
+/// Shared async metadata source for the anchored model menu and the mobile
+/// model sheet: one owner for the catalog lifecycle and refresh state.
+class _ModelMenuData extends StatefulWidget {
+  const _ModelMenuData({required this.controller, required this.builder});
+  final ComposerController controller;
+  final Widget Function(
+          BuildContext context,
+          ComposerModelCatalogProjection? projection,
+          Object? metadataError,
+          bool metadataLoading,
+          VoidCallback refresh)
+      builder;
+  @override
+  State<_ModelMenuData> createState() => _ModelMenuDataState();
+}
+
+class _ModelMenuDataState extends State<_ModelMenuData> {
+  ModelProvidersCatalog? _catalog;
+  ComposerModelCatalogProjection? _projection;
+  Object? _metadataError;
+  int _generation = 0;
+  bool _metadataLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshMetadata();
+  }
+
+  Future<void> _refreshMetadata() async {
+    if (_metadataLoading || !mounted) return;
+    _metadataLoading = true;
+    final generation = ++_generation;
+    _catalog?.dispose();
+    final catalog = ModelProvidersCatalog(
+      session: widget.controller.transport.session,
+      scopeKey: widget.controller.key,
+    );
+    _catalog = catalog;
+    if (mounted) setState(() {});
+    Map<String, dynamic> familySelection = const {};
+    Object? familyError;
+    try {
+      final familyFuture =
+          widget.controller.transport.providerFamilySelection();
+      final catalogFuture = catalog.refresh();
+      try {
+        familySelection = await familyFuture;
+      } catch (error) {
+        familyError = error;
+      }
+      await catalogFuture;
+      if (!mounted ||
+          generation != _generation ||
+          !identical(_catalog, catalog)) {
+        return;
+      }
+      if (catalog.status == ModelProviderCatalogStatus.loaded) {
+        _projection = ComposerModelCatalogProjection.fromCatalog(
+            catalog, familySelection);
+        _metadataError = familyError;
+      } else {
+        _metadataError =
+            catalog.error ?? familyError ?? StateError('metadata unavailable');
+      }
+      if (mounted && generation == _generation) setState(() {});
+    } finally {
+      _metadataLoading = false;
+      if (mounted && generation == _generation) setState(() {});
+    }
+  }
+
+  @override
+  void dispose() {
+    _generation++;
+    _catalog?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: widget.controller,
+      builder: (context, _) => widget.builder(
+          context,
+          _projection,
+          _metadataError,
+          _metadataLoading,
+          _refreshMetadata),
+    );
+  }
 }
 
 class _ModeMenu extends StatelessWidget {
@@ -164,82 +367,48 @@ class _ModeOption extends StatelessWidget {
   }
 }
 
-class _ModelMenu extends StatefulWidget {
+class _ModelMenu extends StatelessWidget {
   const _ModelMenu({required this.controller, this.onManageModels});
   final ComposerController controller;
   final VoidCallback? onManageModels;
 
   @override
-  State<_ModelMenu> createState() => _ModelMenuState();
+  Widget build(BuildContext context) {
+    return _ModelMenuData(
+      controller: controller,
+      builder: (context, projection, metadataError, metadataLoading,
+              refreshMetadata) =>
+          _ModelMenuBody(
+            controller: controller,
+            projection: projection,
+            metadataError: metadataError,
+            metadataLoading: metadataLoading,
+            refreshMetadata: refreshMetadata,
+            onManageModels: onManageModels,
+          ),
+    );
+  }
 }
 
-class _ModelMenuState extends State<_ModelMenu> {
-  ModelProvidersCatalog? _catalog;
-  ComposerModelCatalogProjection? _projection;
-  Object? _metadataError;
-  int _generation = 0;
-  bool _metadataLoading = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _refreshMetadata();
-  }
-
-  Future<void> _refreshMetadata() async {
-    if (_metadataLoading || !mounted) return;
-    _metadataLoading = true;
-    final generation = ++_generation;
-    _catalog?.dispose();
-    final catalog = ModelProvidersCatalog(
-      session: widget.controller.transport.session,
-      scopeKey: widget.controller.key,
-    );
-    _catalog = catalog;
-    if (mounted) setState(() {});
-    Map<String, dynamic> familySelection = const {};
-    Object? familyError;
-    try {
-      final familyFuture =
-          widget.controller.transport.providerFamilySelection();
-      final catalogFuture = catalog.refresh();
-      try {
-        familySelection = await familyFuture;
-      } catch (error) {
-        familyError = error;
-      }
-      await catalogFuture;
-      if (!mounted ||
-          generation != _generation ||
-          !identical(_catalog, catalog)) {
-        return;
-      }
-      if (catalog.status == ModelProviderCatalogStatus.loaded) {
-        _projection = ComposerModelCatalogProjection.fromCatalog(
-            catalog, familySelection);
-        _metadataError = familyError;
-      } else {
-        _metadataError =
-            catalog.error ?? familyError ?? StateError('metadata unavailable');
-      }
-      if (mounted && generation == _generation) setState(() {});
-    } finally {
-      _metadataLoading = false;
-      if (mounted && generation == _generation) setState(() {});
-    }
-  }
-
-  @override
-  void dispose() {
-    _generation++;
-    _catalog?.dispose();
-    super.dispose();
-  }
+class _ModelMenuBody extends StatelessWidget {
+  const _ModelMenuBody({
+    required this.controller,
+    required this.projection,
+    required this.metadataError,
+    required this.metadataLoading,
+    required this.refreshMetadata,
+    this.onManageModels,
+  });
+  final ComposerController controller;
+  final ComposerModelCatalogProjection? projection;
+  final Object? metadataError;
+  final bool metadataLoading;
+  final VoidCallback refreshMetadata;
+  final VoidCallback? onManageModels;
 
   @override
   Widget build(BuildContext context) {
-    final controller = widget.controller;
-    final groups = controller.options.modelGroupsFor(_projection);
+    final groups = controller.options.modelGroupsFor(projection);
     final selected = controller.options.model(controller.config)?.value;
     final enabled = controller.canConfigureModel;
     return Column(
@@ -261,18 +430,18 @@ class _ModelMenuState extends State<_ModelMenu> {
               badgeLabel: group.badgeLabel,
               items: group.items,
               visionModelValues: group.visionModelValues,
-              projection: _projection,
+              projection: projection,
               selected: group.items.any((item) => item.value == selected),
               enabled: enabled,
             ),
-        if (_metadataError != null) ...[
+        if (metadataError != null) ...[
           const Divider(height: 1),
           _RetryMetadataOption(
-              onPressed: _refreshMetadata, enabled: !_metadataLoading),
+              onPressed: refreshMetadata, enabled: !metadataLoading),
         ],
-        if (widget.onManageModels != null) ...[
+        if (onManageModels != null) ...[
           const Divider(height: 1),
-          _ManageModelsOption(onPressed: widget.onManageModels!),
+          _ManageModelsOption(onPressed: onManageModels!),
         ],
       ],
     );

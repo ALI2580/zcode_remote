@@ -8,7 +8,7 @@ import 'package:zcode_remote/update/app_version.dart';
 void main() {
   test('bundled app version matches the release currently being built', () {
     expect(appVersion, '0.1.0');
-    expect(appBuildNumber, 11);
+    expect(appBuildNumber, 12);
     expect(updateRepo, 'ALI2580/zcode_remote');
   });
 

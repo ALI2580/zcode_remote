@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.1.0+12]
+
+### 扫码配对（2026-09-14）
+
+- 设备链接对话框（添加/更新两用）新增"扫码填充"：直接扫桌面端展示的远程控制二维码填入链接字段，配对失效后可通过"更新连接链接"一次扫码完成凭据换新。
+- 新增 `QrScanPage`（`mobile_scanner`，仅 Android/iOS 编译依赖，桌面端入口自动隐藏）与 `sanitizeRemoteControlPayload` 载荷净化（去空白/BOM/引号/尖括号，校验远程控制链接结构）。
+- Android 声明 `CAMERA` 权限与 `uses-feature required=false`（无相机设备仍可安装）。
+
+### 引导欢迎页官方视觉（2026-09-15）
+
+- 引导向导欢迎页对齐官方结构：左列眉标胶囊 + 品牌 Z 徽标（56×56 官方渐变与 SVG）+ 全宽操作区，右列官方 hero 面板（基础渐变、径向"before"叠层与 screen/multiply 混合光晕，几何取官方 896px 弹窗内的固定像素值）。
+
+### 手机竖屏体验（2026-09-15，仅 compact 生效，宽屏逐字节不变）
+
+- 触控目标基建：`MobileLayout.isCompact` 断点判定（含 200% 大字 1180 宽）、`MobileIconButton`（≥48 命中、图标 16–20）、`MobileOptionSheet` 底部面板（Semantics 语义补全）。
+- 终端抽屉：标签行 48、关闭钮 36×48、头部钮 48×48；新增最大化/恢复（PTY 不重建）。
+- Composer：发送钮与 chips 行高提升至 48（容器宽 ≥312 且竖屏）；模型/模式/思考选择在 compact 下改为底部面板（搜索、组头、vision 标记、管理入口，同一 controller 与提交回调）。
+- 顶栏分层：compact 仅保留导航 + 更多，Git chip/终端/面板收进任务菜单并带激活态；消息操作钮 48×48。
+- 设置窄屏导航：分类列表 → 详情（全高行 + 图标），Back 回列表不退出设置，深链接直达详情。
+- profile 帧率（MuMu x64 口径）：滚动/键盘 inset/底部弹层/全宽面板路由四阶段均零超 16.67ms 帧；TalkBack 真人深检与单手热区主观评估按手册留待真人执行。
+
+### 性能与代码结构优化（2026-09-15）
+
+- 会话状态：`ConversationState` 引入 rowId→index 映射，600-delta 帧中位耗时 20k 行 95.1ms→0.21ms（1k/5k 同口径 5.20/23.9→0.60/0.28ms）。
+- 视口：`findChildIndexCallback` 由双重 O(N) 线性扫描改为反向索引 O(1)（`indexOfScans` 20k×40 帧 1,120 万步→0）；顶部流式 −28.5%、深滚动下流式 −30.5%~−51.6%。
+- 代码渲染：高亮 scope RegExp 静态化 + 格式化 LRU 缓存（40 帧重建 wrap −40.5%/nowrap −49%，格式化调用归零）。
+- 聊天页：`singleTurn` 每 build O(可见组×N) 扫描提升为 O(N) 纯函数计算。
+- 结构分层：设置中心 5,288→4,283 行并提取 `lib/ui/settings/`（更新/常规页与共享行组件）；聊天页 2,781→2,041 行并提取 `lib/ui/conversation/`（回合投影 + 变更摘要卡）；`conversation.dart` 拆出纯 Dart `conversation_state.dart`；新增 `test/structure/boundary_guard_test.dart` 三项边界守护与关键路径确定性计数器。
+- 口径说明：以上为 Win11 debug 测试口径与模拟器 profile 口径的算法/确定性计数对照，实体机帧率复测待设备重连后补测。
+
 ## [0.1.0+11]
 
 ### 二轮官方体验修复（U17–U26，2026-09-13）

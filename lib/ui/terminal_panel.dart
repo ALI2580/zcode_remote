@@ -9,6 +9,8 @@ import '../state/client_preferences.dart';
 import '../state/terminal_sessions.dart';
 import '../state/terminal_session.dart';
 import 'official_icons.dart';
+import 'mobile/mobile_layout.dart';
+import 'mobile/touch_target.dart';
 import 'shell/shell_layout.dart';
 import 'terminal_renderer.dart';
 import 'theme.dart';
@@ -390,12 +392,19 @@ class TerminalDrawer extends StatefulWidget {
   final TerminalWorkspaceSessions? workspace;
   final VoidCallback? onCloseDrawer;
 
+  /// Compact-only presentation toggle: the host stretches the drawer to the
+  /// full body height. The PTY sessions are untouched by this switch.
+  final bool maximized;
+  final VoidCallback? onToggleMaximize;
+
   const TerminalDrawer({
     super.key,
     required this.client,
     required this.cwd,
     required this.visible,
     this.workspace,
+    this.maximized = false,
+    this.onToggleMaximize,
     this.onCloseDrawer,
   });
 
@@ -433,6 +442,11 @@ class _TerminalDrawerState extends State<TerminalDrawer> {
   Widget build(BuildContext context) {
     final ink = ZInk.of(Theme.of(context).colorScheme);
     final workspace = widget.workspace;
+    // Compact phones get full touch targets in the drawer header; the wide
+    // layout keeps the desktop shell buttons untouched.
+    final compact = MobileLayout.isCompact(
+        MediaQuery.sizeOf(context).width - MediaQuery.paddingOf(context).horizontal,
+        MediaQuery.textScalerOf(context));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -471,15 +485,37 @@ class _TerminalDrawerState extends State<TerminalDrawer> {
             else
               const Spacer(),
             if (workspace != null && workspace.canAdd)
-              ShellIconButton(
-                  icon: 'plus',
-                  label: uiText(context, '新建终端标签', 'New terminal tab'),
-                  onPressed: () => workspace.add()),
+              compact
+                  ? MobileIconButton(
+                      icon: 'plus',
+                      label: uiText(context, '新建终端标签', 'New terminal tab'),
+                      onPressed: () => workspace.add())
+                  : ShellIconButton(
+                      icon: 'plus',
+                      label: uiText(context, '新建终端标签', 'New terminal tab'),
+                      onPressed: () => workspace.add()),
+            if (compact && widget.onToggleMaximize != null)
+              MobileIconButton(
+                  icon: widget.maximized ? 'chevrons-down' : 'chevrons-up',
+                  label: uiText(
+                      context,
+                      widget.maximized ? '恢复终端高度' : '终端最大化',
+                      widget.maximized
+                          ? 'Restore terminal height'
+                          : 'Maximize terminal'),
+                  onPressed: widget.onToggleMaximize),
             if (widget.onCloseDrawer != null)
-              ShellIconButton(
-                  icon: 'x',
-                  label: uiText(context, '关闭终端抽屉', 'Close terminal drawer'),
-                  onPressed: widget.onCloseDrawer!),
+              compact
+                  ? MobileIconButton(
+                      icon: 'x',
+                      label: uiText(
+                          context, '关闭终端抽屉', 'Close terminal drawer'),
+                      onPressed: widget.onCloseDrawer!)
+                  : ShellIconButton(
+                      icon: 'x',
+                      label: uiText(
+                          context, '关闭终端抽屉', 'Close terminal drawer'),
+                      onPressed: widget.onCloseDrawer!),
           ]),
         ),
         Expanded(
@@ -508,9 +544,51 @@ class _TerminalTab extends StatelessWidget {
     this.onClose,
   });
 
+  Widget _tabRow(BuildContext context, InkTokens ink, bool compact) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 160),
+        child: Text(label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                fontSize: 12, color: selected ? ink.text : ink.subtlest)),
+      ),
+      if (onClose != null)
+        compact
+            ? SizedBox(
+                width: 36,
+                height: 48,
+                child: IconButton(
+                  padding: const EdgeInsets.all(4),
+                  iconSize: 14,
+                  tooltip: uiText(context, '关闭终端标签', 'Close terminal tab'),
+                  onPressed: onClose,
+                  icon: LucideIcon('x', size: 14, color: ink.subtlest),
+                ),
+              )
+            : SizedBox(
+                width: 24,
+                height: 24,
+                child: IconButton(
+                  padding: const EdgeInsets.all(4),
+                  iconSize: 12,
+                  tooltip: uiText(context, '关闭终端标签', 'Close terminal tab'),
+                  onPressed: onClose,
+                  icon: LucideIcon('x', size: 12, color: ink.subtlest),
+                ),
+              ),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final ink = ZInk.of(Theme.of(context).colorScheme);
+    // Compact tabs keep a full-height touch row; the close box stays inside
+    // this tab's own InkWell so it can never overlap the neighbour tab.
+    final compact = MobileLayout.isCompact(
+        MediaQuery.sizeOf(context).width - MediaQuery.paddingOf(context).horizontal,
+        MediaQuery.textScalerOf(context));
     return Padding(
       padding: const EdgeInsets.only(right: 6),
       child: Material(
@@ -522,32 +600,17 @@ class _TerminalTab extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           borderRadius: BorderRadius.circular(8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 160),
-                child: Text(label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: selected ? ink.text : ink.subtlest)),
-              ),
-              if (onClose != null)
-                SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: IconButton(
-                    padding: const EdgeInsets.all(4),
-                    iconSize: 12,
-                    tooltip: uiText(context, '关闭终端标签', 'Close terminal tab'),
-                    onPressed: onClose,
-                    icon: LucideIcon('x', size: 12, color: ink.subtlest),
-                  ),
+          child: compact
+              ? ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 48),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: _tabRow(context, ink, true),
+                  ))
+              : Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: _tabRow(context, ink, false),
                 ),
-            ]),
-          ),
         ),
       ),
     );

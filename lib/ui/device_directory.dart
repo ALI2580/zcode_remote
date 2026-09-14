@@ -4,8 +4,10 @@ import '../state/app_sessions.dart';
 import '../state/client_preferences.dart';
 import '../state/device_store.dart';
 import '../protocol/connection_params.dart';
+import '../protocol/qr_pairing.dart';
 import 'official_icons.dart';
 import 'device_connection_status.dart';
+import 'qr_scan_page.dart';
 import 'theme.dart';
 
 class DeviceDirectory extends StatefulWidget {
@@ -289,6 +291,22 @@ class _DeviceLinkDialogState extends State<_DeviceLinkDialog> {
     super.dispose();
   }
 
+  Future<void> _scan() async {
+    FocusScope.of(context).unfocus();
+    final raw = await qrScanLauncher(context);
+    if (!mounted || raw == null) return;
+    final clean = sanitizeRemoteControlPayload(raw);
+    if (clean == null) {
+      setState(() => _error = uiText(context, '二维码不是有效的远程控制链接',
+          'The QR code is not a valid remote-control link'));
+      return;
+    }
+    setState(() {
+      _url.text = clean;
+      _error = null;
+    });
+  }
+
   Future<void> _save() async {
     if (_saving) return;
     if (ZemoteConnectionParams.parse(_url.text.trim()) == null) {
@@ -343,7 +361,14 @@ class _DeviceLinkDialogState extends State<_DeviceLinkDialog> {
                         decoration: InputDecoration(
                             labelText: uiText(
                                 context, '远程控制链接', 'Remote-control link'),
-                            hintText: 'https://zcode.z.ai/remote/v4?...'),
+                            hintText: 'https://zcode.z.ai/remote/v4?...',
+                            suffixIcon: qrScanSupported
+                                ? IconButton(
+                                    tooltip: uiText(
+                                        context, '扫码填充', 'Scan QR code'),
+                                    icon: const Icon(Icons.qr_code_scanner),
+                                    onPressed: _saving ? null : _scan)
+                                : null),
                         onSubmitted: (_) => _save()),
                     if (_error != null)
                       Padding(

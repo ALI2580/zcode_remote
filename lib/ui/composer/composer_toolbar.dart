@@ -5,6 +5,8 @@ import '../../state/client_preferences.dart';
 import '../../state/composer_config.dart';
 import '../../state/composer_controller.dart';
 import '../official_icons.dart';
+import '../mobile/mobile_layout.dart';
+import '../mobile/option_sheet.dart';
 import '../theme.dart';
 import 'composer_popover.dart';
 import 'context_usage.dart';
@@ -52,6 +54,18 @@ class ComposerToolbar extends StatelessWidget {
         final levels = sortedThoughtLevels(options.levels(config));
         final width = constraints.maxWidth;
         final queryWidth = containerWidth ?? width;
+        // Touch density follows the composer CONTAINER width (never the
+        // window width); 384/576/672 layout breakpoints stay untouched.
+        // 312 is the composer container of the 320 logical-px minimum phone
+        // viewport; below it (desktop narrow windows, popover rigs) the
+        // enlarged touch row does not fit, so the official sizes stay.
+        // Landscape viewports keep the official sizes: the taller touch row
+        // does not fit above a landscape keyboard.
+        final mqSize = MediaQuery.sizeOf(context);
+        final touch = queryWidth >= 312 &&
+            mqSize.height >= mqSize.width &&
+            MobileLayout.isCompact(
+                queryWidth, MediaQuery.textScalerOf(context));
         final usage = ContextUsageInfo.parse(controller.state?.usage);
         final labelModel = queryWidth >= 384;
         final labelMode = queryWidth >= 576;
@@ -86,6 +100,7 @@ class ComposerToolbar extends StatelessWidget {
                     child: Builder(
                         builder: (anchor) => _Chip(
                               id: 'mode',
+                              compact: touch,
                               icon: modeIcon,
                               label: labelMode
                                   ? modeLabel(
@@ -103,8 +118,11 @@ class ComposerToolbar extends StatelessWidget {
                                   uiText(context, '协作模式', 'Collaboration mode'),
                               onTap: controller.canConfigureMode
                                   ? () async {
-                                      final picked = await showComposerModeMenu(
-                                          anchor, controller);
+                                      final picked = touch
+                                          ? await showComposerModeSheet(
+                                              context, controller)
+                                          : await showComposerModeMenu(
+                                              anchor, controller);
                                       if (picked != null) {
                                         await controller.selectMode(picked);
                                       }
@@ -123,6 +141,7 @@ class ComposerToolbar extends StatelessWidget {
                     child: Builder(
                         builder: (anchor) => _Chip(
                               id: 'model',
+                              compact: touch,
                               icon: labelModel ? null : 'package',
                               label: labelModel ? '$prefix$modelName' : null,
                               tooltip:
@@ -131,11 +150,16 @@ class ComposerToolbar extends StatelessWidget {
                               onTap: controller.canConfigureModel &&
                                       options.models.isNotEmpty
                                   ? () async {
-                                      final picked =
-                                          await showComposerModelMenu(
+                                      final picked = touch
+                                          ? await showComposerModelSheet(
+                                              context, controller,
+                                              onManageModels: onManageModels)
+                                          : await showComposerModelMenu(
                                               anchor, controller,
                                               onManageModels: onManageModels);
-                                      if (picked != null) {
+                                      if (picked == composerManageModelsSentinel) {
+                                        onManageModels?.call();
+                                      } else if (picked != null) {
                                         await controller.selectModel(picked);
                                       }
                                     }
@@ -149,6 +173,7 @@ class ComposerToolbar extends StatelessWidget {
                       child: Builder(
                           builder: (anchor) => _Chip(
                                 id: 'thought',
+                                compact: touch,
                                 icon: 'brain',
                                 label: labelThought
                                     ? thoughtLabel(context, thought)
@@ -171,12 +196,13 @@ class ComposerToolbar extends StatelessWidget {
                                             })
                                         ],
                                         thought,
-                                        controller.selectThought)
+                                        controller.selectThought,
+                                        compact: touch)
                                     : null,
                               ))),
                 ],
                 const SizedBox(width: 6),
-                _Submit(controller: controller, onSend: onSend),
+                _Submit(controller: controller, onSend: onSend, compact: touch),
               ])),
             ]);
       });
@@ -185,7 +211,22 @@ class ComposerToolbar extends StatelessWidget {
       BuildContext context,
       List<ConfigOptionValue> values,
       String? selected,
-      Future<bool> Function(String) select) async {
+      Future<bool> Function(String) select,
+      {required bool compact}) async {
+    if (compact) {
+      final picked = await showMobileOptionSheet<String>(
+          context: context,
+          title: uiText(context, '思考等级', 'Thought level'),
+          options: [
+            for (final value in values)
+              MobileSheetOption<String>(
+                  value: value.value,
+                  label: value.name,
+                  selected: value.value == selected)
+          ]);
+      if (picked != null) await select(picked);
+      return;
+    }
     final ink = ZInk.of(Theme.of(context).colorScheme);
     final picked = await showComposerPopover<String>(
       context,
@@ -265,7 +306,8 @@ class _Chip extends StatelessWidget {
       this.onTap,
       this.pending = false,
       this.color,
-      this.meter});
+      this.meter,
+      this.compact = false});
   final String id;
   final String? icon;
   final String? label;
@@ -274,6 +316,10 @@ class _Chip extends StatelessWidget {
   final bool pending;
   final double? meter;
   final Color? color;
+
+  /// Compact shells raise the hit box to a full-height touch row; the
+  /// default keeps the official desktop chip size.
+  final bool compact;
   @override
   Widget build(BuildContext context) {
     final ink = ZInk.of(Theme.of(context).colorScheme);
@@ -287,10 +333,12 @@ class _Chip extends StatelessWidget {
                 onTap: onTap,
                 borderRadius: BorderRadius.circular(8),
                 child: Container(
-                    constraints:
-                        const BoxConstraints(minWidth: 28, minHeight: 28),
+                    constraints: BoxConstraints(
+                        minWidth: compact ? 44 : 28,
+                        minHeight: compact ? 48 : 28),
                     padding: EdgeInsets.symmetric(
-                        horizontal: label == null ? 6 : 8, vertical: 4),
+                        horizontal: label == null ? 6 : 8,
+                        vertical: compact ? 8 : 4),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
                       if (pending)
                         SizedBox(
@@ -342,9 +390,13 @@ class _Chip extends StatelessWidget {
 }
 
 class _Submit extends StatelessWidget {
-  const _Submit({required this.controller, required this.onSend});
+  const _Submit(
+      {required this.controller, required this.onSend, this.compact = false});
   final ComposerController controller;
   final VoidCallback onSend;
+
+  /// Compact shells give the primary action a 48px box; desktop keeps 28.
+  final bool compact;
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -384,8 +436,8 @@ class _Submit extends StatelessWidget {
                         : null,
                     borderRadius: BorderRadius.circular(8),
                     child: SizedBox(
-                        width: 28,
-                        height: 28,
+                        width: compact ? 48 : 28,
+                        height: compact ? 48 : 28,
                         child: Center(
                             child: busy
                                 ? SizedBox(
@@ -396,7 +448,7 @@ class _Submit extends StatelessWidget {
                                         color: scheme.onPrimary))
                                 : LucideIcon(
                                     showStop ? 'circle-stop' : 'arrow-up',
-                                    size: 16,
+                                    size: compact ? 18 : 16,
                                     color: scheme.onPrimary)))))));
   }
 }

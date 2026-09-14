@@ -142,7 +142,7 @@ void main() {
         .position;
     position.jumpTo(0);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('应用统计'));
+    await tester.tap(find.text('应用用量'));
     await tester.pumpAndSettle();
     await capture('application');
     expect(

@@ -483,6 +483,205 @@ void main() {
     });
   });
 
+  group('ConversationState rowId index consistency (P1-conv)', () {
+    late ConversationState state;
+
+    setUp(() {
+      state = ConversationState();
+    });
+
+    void applyDeltas(List<Map<String, dynamic>> deltas, {int? seq}) {
+      state.applyFrame({
+        'payload': {'kind': 'deltas', 'deltas': deltas},
+        'fromSeq': seq ?? state.seq,
+        'toSeq': (seq ?? state.seq) + 1,
+      }, onGap: () => fail('unexpected gap'));
+    }
+
+    test('upsert and delta hit the right rows after a snapshot rebuild', () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 1, 'kind': 'assistantText', 'text': 'a'},
+            {'rowId': 2, 'kind': 'user', 'text': 'b'},
+            {'rowId': 3, 'kind': 'assistantText', 'text': 'c'},
+          ],
+          totalCount: 3,
+          firstRowId: 1);
+
+      applyDeltas([
+        {
+          'op': 'row.upserted',
+          'row': {'rowId': 2, 'kind': 'user', 'text': 'b2'},
+        },
+        {
+          'op': 'row.delta',
+          'rowId': 3,
+          'path': 'text',
+          'append': '+c',
+        },
+      ]);
+
+      expect(state.rows.map((r) => r['text']).toList(), ['a', 'b2', 'c+c']);
+    });
+
+    test('prepend shifts indices and lookups still resolve', () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 2, 'kind': 'assistantText', 'text': 'b'},
+          ],
+          totalCount: 2,
+          firstRowId: 2);
+      state.prependOlderRows([
+        {'rowId': 1, 'kind': 'assistantText', 'text': 'a'},
+      ], 1);
+
+      applyDeltas([
+        {
+          'op': 'row.delta',
+          'rowId': 2,
+          'path': 'text',
+          'append': '+b',
+        },
+        {
+          'op': 'row.upserted',
+          'row': {'rowId': 1, 'kind': 'assistantText', 'text': 'a2'},
+        },
+      ]);
+
+      expect(state.rows.map((r) => r['text']).toList(), ['a2', 'b+b']);
+    });
+
+    test('removal rebuilds so surviving rows stay addressable', () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 1, 'kind': 'user', 'text': 'keep'},
+            {'rowId': 2, 'kind': 'assistantText', 'text': 'drop'},
+            {'rowId': 3, 'kind': 'user', 'text': 'keep3'},
+          ],
+          totalCount: 3,
+          firstRowId: 1);
+
+      applyDeltas([
+        {'op': 'row.removed', 'fromRowId': 3},
+        {
+          'op': 'row.upserted',
+          'row': {'rowId': 1, 'kind': 'user', 'text': 'kept2'},
+        },
+      ]);
+
+      expect(state.rows.map((r) => r['rowId']).toList(), [1, 2]);
+      expect(state.rows[0]['text'], 'kept2');
+    });
+
+    test('epoch change clears rows and unknown ids stay no-ops', () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 1, 'kind': 'user', 'text': 'old epoch'},
+          ],
+          totalCount: 1,
+          firstRowId: 1);
+
+      state.applyFrame({
+        'payload': {
+          'kind': 'snapshot',
+          'snapshot': {
+            'logEpoch': 'epoch-2',
+            'revision': 2,
+            'rows': {'window': [], 'totalCount': 0},
+          },
+        },
+        'toSeq': 6,
+      }, onGap: () => fail('snapshot should not gap'));
+
+      applyDeltas([
+        {
+          'op': 'row.upserted',
+          'row': {'rowId': 1, 'kind': 'user', 'text': 'ghost'},
+        },
+        {
+          'op': 'row.delta',
+          'rowId': 99,
+          'path': 'text',
+          'append': '+x',
+        },
+      ]);
+
+      expect(state.rows, isEmpty);
+      expect(state.logEpoch, 'epoch-2');
+    });
+
+    test('null rowId delta keeps legacy first-null-row match', () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 1, 'kind': 'assistantText', 'text': 'a'},
+            {'kind': 'assistantText', 'text': 'anon1'},
+            {'kind': 'assistantText', 'text': 'anon2'},
+          ],
+          totalCount: 3,
+          firstRowId: 1);
+
+      applyDeltas([
+        {'op': 'row.delta', 'rowId': null, 'path': 'text', 'append': '+n'},
+      ]);
+
+      expect(state.rows[1]['text'], 'anon1+n');
+      expect(state.rows[2]['text'], 'anon2');
+    });
+
+    test('optimisticRowUpdate reaches rows restored by history paging', () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 5, 'kind': 'assistantText', 'text': 'tail'},
+          ],
+          totalCount: 5,
+          firstRowId: 5);
+      state.prependOlderRows([
+        {'rowId': 4, 'kind': 'user', 'text': 'older'},
+      ], 4);
+
+      state.optimisticRowUpdate(5, {'feedback': 'up'});
+      state.optimisticRowUpdate(4, {'feedback': 'down'});
+
+      expect(state.rows[0]['feedback'], 'down');
+      expect(state.rows[1]['feedback'], 'up');
+    });
+
+    test('history reducer restore path keeps deltas landing on old rows', () {
+      _injectSnapshot(state,
+          rows: [
+            {'rowId': 7, 'kind': 'assistantText', 'text': 't'},
+          ],
+          totalCount: 7,
+          firstRowId: 7);
+      state.prependOlderRows([
+        {'rowId': 2, 'kind': 'assistantText', 'text': 'e'},
+        {'rowId': 5, 'kind': 'assistantText', 'text': 'f'},
+      ], 2);
+
+      applyDeltas([
+        {
+          'op': 'row.delta',
+          'rowId': 5,
+          'path': 'text',
+          'append': '+five',
+        },
+        {
+          'op': 'row.upserted',
+          'row': {'rowId': 2, 'kind': 'assistantText', 'text': 'e2'},
+        },
+        {
+          'op': 'row.delta',
+          'rowId': 7,
+          'path': 'text',
+          'append': '+seven',
+        },
+      ]);
+
+      expect(state.rows.map((r) => r['text']).toList(),
+          ['e2', 'f+five', 't+seven']);
+    });
+  });
+
   group('SessionsIndexState delta application', () {
     late SessionsIndexState state;
     late int gapCount;

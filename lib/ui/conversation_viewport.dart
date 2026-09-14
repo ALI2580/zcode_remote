@@ -20,9 +20,20 @@ class ConversationViewport extends StatefulWidget {
   final IndexedWidgetBuilder itemBuilder;
   final VoidCallback? onLoadOlder;
   final bool loadingOlder;
+
   @override
   State<ConversationViewport> createState() => _ConversationViewportState();
 }
+
+/// P2-viewport deterministic counters (references/optimization/
+/// performance-todolist.md): [childIndexProbeCalls] counts
+/// findChildIndexCallback invocations, [childIndexProbeEntries] the
+/// `_items` entries scanned inside them (O(1) after the reverse-map fix),
+/// and [captureScans] the ids iterated by anchor capture.
+int viewportChildIndexProbeCalls = 0;
+int viewportChildIndexProbeEntries = 0;
+int viewportCaptureScans = 0;
+int viewportIndexOfScans = 0;
 
 class _ConversationViewportState extends State<ConversationViewport> {
   late final ScrollController _scroll;
@@ -32,6 +43,27 @@ class _ConversationViewportState extends State<ConversationViewport> {
   bool _scheduled = false;
   bool _adjusting = false;
   bool _capturePending = false;
+
+  // P2-viewport: findChildIndexCallback used to run two O(ids) scans per
+  // visible child per rebuild (linear _items sweep + ids.indexOf). The key
+  // now resolves through the `_idByKey` reverse map (maintained where the
+  // forward map is filled), and the index through `_indexById`, rebuilt
+  // lazily once per ids list instance. putIfAbsent keeps the FIRST index
+  // for an id, matching the previous indexOf semantics.
+  final _idByKey = <GlobalKey, String>{};
+  List<String>? _indexSource;
+  late final Map<String, int> _indexById = <String, int>{};
+
+  Map<String, int> _indexOfId() {
+    if (!identical(widget.ids, _indexSource)) {
+      _indexById.clear();
+      for (var i = 0; i < widget.ids.length; i++) {
+        _indexById.putIfAbsent(widget.ids[i], () => i);
+      }
+      _indexSource = widget.ids;
+    }
+    return _indexById;
+  }
 
   @override
   void initState() {
@@ -49,6 +81,7 @@ class _ConversationViewportState extends State<ConversationViewport> {
     if (viewport is! RenderBox || !viewport.hasSize) return;
     final top = viewport.localToGlobal(Offset.zero).dy;
     for (final id in widget.ids) {
+      viewportCaptureScans++;
       final box = _items[id]?.currentContext?.findRenderObject();
       if (box is! RenderBox || !box.hasSize || !box.attached) continue;
       final offset = box.localToGlobal(Offset.zero).dy - top;
@@ -155,11 +188,10 @@ class _ConversationViewportState extends State<ConversationViewport> {
             padding: const EdgeInsets.symmetric(vertical: 16),
             itemCount: widget.ids.length + 1,
             findChildIndexCallback: (key) {
-              final id = _items.entries
-                  .where((entry) => entry.value == key)
-                  .firstOrNull
-                  ?.key;
-              final index = id == null ? -1 : widget.ids.indexOf(id);
+              viewportChildIndexProbeCalls++;
+              final id = _idByKey[key];
+              viewportChildIndexProbeEntries++;
+              final index = id == null ? -1 : _indexOfId()[id] ?? -1;
               return index < 0 ? null : index + 1;
             },
             itemBuilder: (context, index) {
@@ -180,8 +212,13 @@ class _ConversationViewportState extends State<ConversationViewport> {
                                     'Load earlier messages'))));
               }
               final i = index - 1;
+              final key = _items.putIfAbsent(widget.ids[i], () {
+                final newKey = GlobalKey();
+                _idByKey[newKey] = widget.ids[i];
+                return newKey;
+              });
               return KeyedSubtree(
-                  key: _items.putIfAbsent(widget.ids[i], GlobalKey.new),
+                  key: key,
                   child: ConversationColumn(
                       child: Padding(
                           padding: EdgeInsets.only(
